@@ -2,7 +2,7 @@ import os, re, sys
 import numpy as np
 import pandas as pd
 from astropy.io import fits
-
+from glob import glob
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
@@ -93,7 +93,7 @@ if __name__ == '__main__':
         except:
             pass
 
-    file_list                 = np.sort(os.listdir(date_path))
+    file_list                 = np.sort(glob(date_path + '*.fits'))
     file_list                 = np.append(file_list, file_list[-1])
 
     ### file params read

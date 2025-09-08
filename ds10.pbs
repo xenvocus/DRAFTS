@@ -1,0 +1,18 @@
+#PBS -N srch_0318_250316_M10
+#PBS -o /home.low.iops/zhangjs/FRB20250316A/20250318/srchM10.out
+#PBS -e /home.low.iops/zhangjs/FRB20250316A/20250318/srchM10.err
+#PBS -q gpu
+#PBS -l nodes=gpu17
+#PBS -W x=GRES:gpu@1
+#PBS -r y
+# fitpath=/data31/ZD2024_5/FRB20250316A_2/20250318/
+output=/home.low.iops/zhangjs/FRB20250316A/20250318/
+fitpath=/home.low.iops/zhangjs/FRB20250316A/20250318/data2/
+source /home/ykzhang/.bashrc
+conda activate pytorch
+cd /home/zhangjs/software/DRAFTS/
+python resnet_search.py -i $fitpath -o $fitpath -dm 161 -re "F*M10*.fits"
+#for i in $(ls -d /home.low.iops/zhangjs/calibration_240114/reopt/*/)
+#do
+#    python resnet_search.py -dm 528 -i $i -o $i -re "F*M01*.fits"
+#done

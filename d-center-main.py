@@ -1,10 +1,13 @@
 import os, re, sys, cv2
 import numpy as np
 from astropy.io import fits
+from glob import glob
 from numba import cuda, njit, prange
-
+import argparse
 import seaborn as sns
 import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
 plt.style.use('default')
 sns.set_color_codes()
 
@@ -33,15 +36,19 @@ def load_fits_file(file_name, reverse_flag=False):
 
 ### 读取fits头文件，获取观测参数，并指定为全局变量
 def get_obparams(file_name):
-
-    global freq, freq_reso, time_reso, file_leng, down_freq_rate, down_time_rate
+    global freq, freq_reso, time_reso, file_leng, down_freq_rate, down_time_rate, reverse_flag
     with fits.open(file_name) as f:
         time_reso  = f[1].header['TBIN']
         freq_reso  = f[1].header['NCHAN']
         file_leng  = f[1].header['NAXIS2'] * f[1].header['NSBLK']
         freq       = f[1].data['DAT_FREQ'][0, :].astype(np.float64)
+    reverse_flag              = False
+    if freq[0] > freq[-1]:
+        reverse_flag          = True
+        freq                  = np.array(freq[::-1])
     down_freq_rate = int(freq_reso / 512)
-    down_time_rate = int((49.152 * 4 / 1e6) / time_reso)
+    # down_time_rate = int((49.152 * 4 / 1e6) / time_reso)
+    down_time_rate = 8
 
 
 ### 单线ddm
@@ -144,28 +151,49 @@ def postprocess_img(img):
 
 
 if __name__ == '__main__':
+    args = argparse.ArgumentParser()
+    args.add_argument('-dm', '--dm', type=int, default=893)
+    args.add_argument('-i', '--input', type=str, default='./')
+    args.add_argument('-o', '--output', type=str, default='./')
+    args.add_argument('-re', type=str, default='*.fits')
+    args = args.parse_args()
+    DM_range                  = args.dm
+    block_size              = 8192
+    date_path                 = args.input
+    save_path                 = args.output
+    det_prob                  = 0.3
+    base_model                = 'resnet18'
+    model_path                = './cent_resnet18.pth'
 
-    DM_range      = 2048
-    block_size    = 8192
-    det_prob      = 0.3
 
-    ## 载入模型
-    base_model    = 'resnet18'
-    model         = centernet(model_name=base_model).to(device)
-    model.load_state_dict(torch.load('./cent_resnet18.pth', map_location=device, weights_only=True))
-    model.eval()
-
-    data_path     = './'
-    save_path     = './'
     if not os.path.exists(save_path):
         try:
             os.makedirs(save_path)
         except:
             pass
+    if "{" in args.re and "}" in args.re:
+        re_left = args.re.split("{")[0]
+        re_brace = args.re.split("{")[1].split("}")[0]
+        re_right = args.re.split("}")[1]
+        re_brace = re_brace.replace(", ", ",")
+        cntnt = re_brace.split(",")
 
-    file_list     = np.sort([i for i in os.listdir(data_path) if i.endswith('fits')])
+        file_list = []
+        for i in range(len(cntnt)):
+            express = re_left + cntnt[i] + re_right
+            globi = glob(date_path + express)
+            file_list.extend(globi)
+    else:
+        file_list = glob(date_path + args.re)
+    file_list = np.sort(file_list)
+    file_list                 = np.append(file_list, file_list[-1])
+    print(file_list)
+
+
+
+    #file_list     = np.sort([i for i in os.listdir(date_path) if i.endswith('fits')])
     file_list     = np.append(file_list, file_list[-1])
-    get_obparams(data_path + file_list[0])
+    get_obparams(file_list[0])
 
     ### combine file number
     dds           = (4.15 * DM_range * (freq**-2 - freq.max()**-2) * 1e3 / time_reso).astype(np.int64)
@@ -173,18 +201,20 @@ if __name__ == '__main__':
     block_file    = int(np.ceil(down_time_rate * block_size / file_leng))
     comb_file     = block_file + dds_file
     print(block_file, comb_file)
-
+    model         = centernet(model_name=base_model).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.eval()
     ### loop
     for i in range(0, len(file_list), block_file):
 
-        ### read data
+    ### read data
         filename              = file_list[i].split('.fits')[0]
         print(filename)
 
         raw_data              = np.empty((0, 2, freq_reso))
         for j in range(comb_file):
             if i + j          < len(file_list):
-                raw_data      = np.append(raw_data, load_fits_file(data_path + file_list[i + j]), axis=0)
+                raw_data      = np.append(raw_data, load_fits_file(file_list[i + j], reverse_flag), axis=0)
 
         if raw_data.shape[0]  < comb_file * file_leng:
             raw_data          = np.append(raw_data, np.random.rand(comb_file * file_leng - raw_data.shape[0], 2, freq_reso) * np.std(raw_data) + np.mean(raw_data), axis=0)
