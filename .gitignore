@@ -173,3 +173,5 @@ cython_debug/
 Hug*/
 hugg*/
 tmp*/
+*.pbs
+src/
