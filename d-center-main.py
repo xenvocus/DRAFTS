@@ -1,17 +1,19 @@
-import os, re, sys, cv2
-import numpy as np
-from astropy.io import fits
-from glob import glob
-from numba import cuda, njit, prange
+import torch, torchvision
+import psutil
 import argparse
-import seaborn as sns
-import matplotlib.pyplot as plt
 import warnings
+import numpy as np
+import seaborn as sns
+from glob import glob
+import os, re, gc, sys, cv2
+from astropy.io import fits
+import matplotlib.pyplot as plt
+from numba import cuda, njit, prange
 warnings.filterwarnings('ignore')
 plt.style.use('default')
 sns.set_color_codes()
 
-import torch
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 from centernet_utils import get_res
@@ -25,12 +27,11 @@ def load_fits_file(file_name, reverse_flag=False):
         import fitsio
         data, h  = fitsio.read(file_name, header=True)
     except:
-        with fits.open(file_name) as f:
+        with fits.open(file_name, memmap=True) as f:
             h    = f[1].header
             data = f[1].data
-    data         = data['DATA'].reshape(h['NAXIS2']*h['NSBLK'], h['NPOL'], h['NCHAN'])[:, :2, :]
+    data = data['DATA'].reshape(h['NAXIS2']*h['NSBLK'], h['NPOL'], h['NCHAN'])[:, :2, :]
     if reverse_flag: data = np.array(data[:, :, ::-1])
-
     return data
 
 
@@ -190,7 +191,6 @@ if __name__ == '__main__':
     print(file_list)
 
 
-
     #file_list     = np.sort([i for i in os.listdir(date_path) if i.endswith('fits')])
     file_list     = np.append(file_list, file_list[-1])
     get_obparams(file_list[0])
@@ -204,9 +204,6 @@ if __name__ == '__main__':
     model         = centernet(model_name=base_model).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
-    ### loop
-    for i in range(0, len(file_list), block_file):
-
     ### read data
         filename              = file_list[i].split('.fits')[0]
         print(filename)
@@ -214,18 +211,25 @@ if __name__ == '__main__':
         raw_data              = np.empty((0, 2, freq_reso))
         for j in range(comb_file):
             if i + j          < len(file_list):
-                raw_data      = np.append(raw_data, load_fits_file(file_list[i + j], reverse_flag), axis=0)
-
+                temp_data     = load_fits_file(file_list[i + j], reverse_flag)
+                raw_data      = np.append(raw_data, temp_data, axis=0)
+                del temp_data  
+        print(raw_data.shape)
+        print(comb_file , file_leng)
+                # raw_data      = np.append(raw_data, load_fits_file(file_list[i + j], reverse_flag), axis=0)
         if raw_data.shape[0]  < comb_file * file_leng:
-            raw_data          = np.append(raw_data, np.random.rand(comb_file * file_leng - raw_data.shape[0], 2, freq_reso) * np.std(raw_data) + np.mean(raw_data), axis=0)
-        raw_data              = np.mean(raw_data.reshape(comb_file * file_leng // down_time_rate, down_time_rate, 2, freq_reso//down_freq_rate, down_freq_rate), axis=(1, 2, 4)).astype(np.float32)
-        # raw_data              = raw_data / np.mean(raw_data, axis=0)
+            padding_data      = np.random.rand(comb_file * file_leng - raw_data.shape[0], 
+                                               2, freq_reso) * np.std(raw_data) + np.mean(raw_data)
+            raw_data          = np.append(raw_data, padding_data, axis=0)
+            del padding_data  # 删除填充数据
+            raw_data              = raw_data / np.mean(raw_data, axis=0)
 
         print('done load file')
         ### time delay correct
         new_data              = d_dm_time_g(raw_data, height=DM_range, width=block_file*file_leng//down_time_rate)
-        # del raw_data
-        # cuda.current_context().memory_manager.deallocations.clear()
+        del raw_data
+        gc.collect()
+        cuda.current_context().memory_manager.deallocations.clear()
         print('done ddm')
 
         ### down_sampling and predict

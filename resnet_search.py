@@ -11,7 +11,7 @@ import warnings
 warnings.filterwarnings('ignore')
 plt.style.use('default')
 sns.set_color_codes()
-
+from sigpyproc.readers import FilReader
 import torch, torchvision
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #device = torch.device("cpu")
@@ -20,7 +20,6 @@ from binary_model import SPPResNet, BinaryNet
 
 ### 读取fits文件，只保留两维数据
 def load_fits_file(file_name, reverse_flag=False):
-
     try:
         import fitsio
         data, h  = fitsio.read(file_name, header=True)
@@ -33,8 +32,18 @@ def load_fits_file(file_name, reverse_flag=False):
     # data = data[:, np.newaxis, :]
     # if reverse_flag: data = np.array(data[:, :, ::-1])
     if reverse_flag: data = np.array(data[:, ::-1])
-
     return data
+
+
+def load_fil_file(file_name, reverse_flag=False):
+
+    fil = FilReader(file_name)
+    data = fil.read_block(0, fil.header.nsamples).astype(np.float32)
+    data = data.reshape(fil.header.nsamples, fil.header.nchans)
+    data = data[:, np.newaxis, :]
+    if reverse_flag: data = np.array(data[:, :, ::-1])
+    return data
+    
 
 
 def preprocess_data(data, exp_cut=5):
@@ -48,6 +57,7 @@ def preprocess_data(data, exp_cut=5):
     data         = (data - data.min()) / (data.max() - data.min())
 
     return data
+
 
 def plot_burst(data, filename, block):
 
@@ -122,12 +132,21 @@ if __name__ == '__main__':
 
     ### file params read
     # with fits.open(date_path + file_list[0]) as f:
-    with fits.open(file_list[0]) as f:
-        time_reso             = f[1].header['TBIN'] * down_sampling_rate
-        freq_reso             = int(f[1].header['NCHAN'])
-        file_leng             = f[1].header['NAXIS2'] * f[1].header['NSBLK']  // down_sampling_rate
-        freq                  = f[1].data['DAT_FREQ'][0, :].astype(np.float64)
-
+    if file_list[0].endswith('.fil'):
+        fil = FilReader(file_list[0])
+        time_reso             = fil.header.tsamp * down_sampling_rate
+        freq_reso             = int(fil.header.nchans)
+        file_leng             = fil.header.nsamples // down_sampling_rate
+        foff                  = fil.header.foff
+        fch1                  = fil.header.fch1
+        freq                  = fch1 + np.arange(freq_reso) * foff
+            
+    else:
+        with fits.open(file_list[0]) as f:
+            time_reso             = f[1].header['TBIN'] * down_sampling_rate
+            freq_reso             = int(f[1].header['NCHAN'])
+            file_leng             = f[1].header['NAXIS2'] * f[1].header['NSBLK']  // down_sampling_rate
+            freq                  = f[1].data['DAT_FREQ'][0, :].astype(np.float64)
     reverse_flag              = False
     if freq[0] > freq[-1]:
         reverse_flag          = True
@@ -153,8 +172,14 @@ if __name__ == '__main__':
 
     ### read data
     for i in range(len(file_list) - 1):
+        def load_file(file_name, reverse_flag=reverse_flag):
+            if file_name.endswith('.fil'):
+                data = load_fil_file(file_name, reverse_flag)
+            else:
+                data = load_fits_file(file_name, reverse_flag)
+            return data
         # raw_data              = load_fits_file(date_path + file_list[i], reverse_flag)
-        raw_data              = load_fits_file(file_list[i], reverse_flag)
+        raw_data              = load_file(file_list[i], reverse_flag)
         # raw_data             = raw_data[:, np.newaxis, :]
         fits_number           = i + 1
         filename              = file_list[i].split('.fits')[0]
@@ -163,21 +188,30 @@ if __name__ == '__main__':
         for j in range(comb_leng):
             if i + j + 1      < len(file_list):
                 # raw_data      = np.append(raw_data, load_fits_file(date_path + file_list[i+j+1], reverse_flag), axis=0)
-                raw_data      = np.append(raw_data, load_fits_file(file_list[i+j+1], reverse_flag), axis=0)
+                raw_data      = np.append(raw_data, load_file(file_list[i+j+1], reverse_flag), axis=0)
         if raw_data.shape[0]  < comb_file_leng:
-            raw_data          = np.append(raw_data, np.random.rand(comb_file_leng-raw_data.shape[0], 2, freq_reso) * raw_data.max() / 2, axis=0)
+            raw_data          = np.append(raw_data, np.random.rand(comb_file_leng-raw_data.shape[0], raw_data.shape[1], freq_reso) * raw_data.max() / 2, axis=0)
             # raw_data          = np.append(raw_data, np.random.rand(comb_file_leng-raw_data.shape[0], freq_reso) * raw_data.max() / 2, axis=0)
         # raw_data              = raw_data[:comb_file_leng, :, :]
         raw_data              = raw_data[:comb_file_leng, :]
         print(raw_data.shape)
-        data                  = np.mean(raw_data.reshape(raw_data.shape[0] // down_sampling_rate, down_sampling_rate, 2, freq_reso), axis=(1, 2)).astype(np.float32)
+        data                  = np.mean(raw_data.reshape(raw_data.shape[0] // down_sampling_rate, down_sampling_rate, raw_data.shape[1], freq_reso), axis=(1, 2)).astype(np.float32)
         # data                  = np.mean(raw_data.reshape(raw_data.shape[0] // down_sampling_rate, down_sampling_rate, freq_reso), axis=(1, 2)).astype(np.float32)
 
         new_data              = np.zeros((down_file_leng, freq_reso))
+        
         for j in range(freq_reso):
             new_data[:, j]    = data[dds[j]: dds[j]+down_file_leng, j]
-        data                  = np.mean(new_data.reshape(down_file_leng//512, 512, 512, freq_reso//512), axis=3)
-
+        if new_data.shape[1] % 512:
+            pad_width        = 512 - (new_data.shape[1] % 512)
+            pad_array        = np.zeros((new_data.shape[0], pad_width))
+            new_data         = np.hstack([new_data, pad_array])
+        if new_data.shape[0] % 512:
+            pad_width        = 512 - (new_data.shape[0] % 512)
+            pad_array        = np.zeros((pad_width, new_data.shape[1]))
+            new_data         = np.vstack([new_data, pad_array])
+        data                  = np.mean(new_data.reshape(new_data.shape[0]//512, 512, 512, new_data.shape[1]//512), axis=3)
+        print(data.shape)
         ### predict
         for j in range(data.shape[0]):
             data[j, :, :]     = preprocess_data(data[j, :, :])
@@ -188,7 +222,7 @@ if __name__ == '__main__':
         with torch.no_grad():
             predict_res       = predict_res.softmax(dim=1)[:, 1].cpu().numpy()
         blocks                = np.where(predict_res >= prob)[0]
-        # save_name = os.path.join(save_path, filename)
+        # save_name = os.path.join(save_path, filename) 
         save_name = filename
         for block in blocks:
             plotres           = plot_burst(data[block], save_name, block)
