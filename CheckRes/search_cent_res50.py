@@ -13,8 +13,8 @@ sns.set_color_codes()
 import torch
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-from centernet_utils import get_res
-from centernet_model import centernet
+from ..ObjectDet.centernet_utils import get_res
+from ..ObjectDet.centernet_model import centernet
 
 
 ### 读取fits文件，只保留两维数据

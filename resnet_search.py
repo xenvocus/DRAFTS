@@ -15,7 +15,7 @@ from sigpyproc.readers import FilReader
 import torch, torchvision
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #device = torch.device("cpu")
-from binary_model import SPPResNet, BinaryNet
+from BinaryClass.binary_model import SPPResNet, BinaryNet
 
 
 ### 读取fits文件，只保留两维数据

@@ -12,8 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib import gridspec
 from braceexpand import braceexpand
 from sigpyproc.readers import FilReader
-from binary_model import SPPResNet, BinaryNet
-from tqdm import tqdm
+from BinaryClass.binary_model import SPPResNet, BinaryNet
 import warnings
 strt_time = datetime.now()
 warnings.filterwarnings('ignore')
@@ -300,7 +299,6 @@ if __name__ == "__main__":
     save_path = args.output
     prob = args.prob
     file_list = handle_regular(data_path, args.re)
-    # file_list = np.append(file_list, file_list[-1])
     print(f"Will process {len(file_list)} files.")
     if not os.path.exists(save_path):
         try:

@@ -12,7 +12,7 @@ sns.set_color_codes()
 import torch, torchvision
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-from binary_model import SPPResNet, BinaryNet
+from BinaryClass.binary_model import SPPResNet, BinaryNet
 
 
 ### 读取fits文件，只保留两维数据
