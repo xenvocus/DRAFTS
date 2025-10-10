@@ -24,6 +24,9 @@ base_model = 'resnet18'
 model_path = './class_resnet18.pth'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# TODO: 1. auto adjust chunk_size according to memory size or file size
+#       2. adjust tdownsamp according to time_reso, and allow user input
+
 
 def get_args():
     args = argparse.ArgumentParser()
@@ -48,17 +51,24 @@ class DataLoader:
         fil = FilReader(self.filename)
         self.data = fil.read_block(start, length).astype(np.float32).T
         # assume no other pols
-        self.data = self.data.reshape(-1, 1, fil.header.nchans)[:, :2, :]
-        # self.data = self.data.reshape(self.file_len, fil.header.nifs, self.freq_reso)[:, :2, :]
-        # print(self.data.shape)
+        self.data = self.data.reshape(-1, 1, fil.header.nchans) # [:, :2, :]
         return self.data
 
 
     def load_fits_file(self, start, length):
-        data, h = fitsio.read(self.filename, header=True)
         self.load_fits_header()
-        data = data['DATA'].reshape(self.nsamp, h['NPOL'], h['NCHAN'])[:, :2, :]
-        data = data
+        # transpose start time sample to (nsub, nsamp)
+        nsblk = self.header['NSBLK']
+        start_nsub = int(start/nsblk) 
+        start_nsamp = start - start_nsub * nsblk
+        end_nsub = np.ceil((start + length) / nsblk).astype(int) 
+        end_nsamp = start_nsamp + length
+        sub_idcs = np.arange(start_nsub, end_nsub)
+        data, h = fitsio.read(self.filename, rows=sub_idcs, 
+                                columns=['DATA'], ext=1, header=True)
+        data = data['DATA'].astype(np.float32)
+        data = data.reshape(-1, h['NPOL'], h['NCHAN'])[start_nsamp:end_nsamp, :2, :]
+        data = np.mean(data, axis=1, keepdims=True)
         return data
 
 
@@ -118,7 +128,6 @@ class DataLoader:
         h0 = fitsio.read_header(self.filename)
         h = fitsio.read_header(self.filename, ext=1)
         self.header = h
-        self.nsamp = h['NAXIS2'] * h['NSBLK']
         self.time_reso = h['TBIN']
         self.freq_reso = int(h['NCHAN'])
         self.file_len = h['NAXIS2'] * h['NSBLK']
@@ -232,11 +241,6 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso):
         file_pointer = file_idx
         loader = DataLoader(file_list[file_pointer])
         loader.load_header()
-
-        # TODO: The current logic for handling cross-file reading assumes
-        # that loader.load can handle chunked reading correctly. This is true for .fil files
-        # but the implementation for .fits files is currently incorrect and reads the whole file.
-        # This needs to be fixed in the DataLoader class for this generator to work with .fits files.
 
         # Check if the remaining data in the current file is enough for a chunk
         if pointer + chunk_size <= loader.file_len:
