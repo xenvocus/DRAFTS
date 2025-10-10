@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 plt.style.use('default')
 sns.set_color_codes()
 block_size = 512
-tdownsamp = 1
+tdownsamp = 4
 base_model = 'resnet18'
 model_path = './class_resnet18.pth'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
