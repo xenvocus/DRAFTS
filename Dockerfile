@@ -1,4 +1,4 @@
-FROM docker.1ms.run/continuumio/miniconda3:latest
+FROM continuumio/miniconda3:latest
 
 WORKDIR /home
 
@@ -16,7 +16,7 @@ COPY . ./DRAFTS/
 
 WORKDIR /home/DRAFTS
 
-RUN echo "source activate pytorch" > ~/.bashrc
+RUN echo "source activate pytorch" >> ~/.bashrc
 
 ENV PATH="/opt/conda/envs/pytorch/bin:$PATH"
 
