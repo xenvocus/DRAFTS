@@ -4,7 +4,8 @@ import argparse
 import numpy as np
 from datetime import datetime
 import torch, torchvision
-from astropy.io import fits
+# from astropy.io import fits
+from numba import njit, prange
 from glob import glob
 import seaborn as sns
 from rich.progress import track
@@ -159,6 +160,18 @@ def handle_regular(data_path, retext):
     return file_list
 
 
+@njit(parallel=True, fastmath=True)
+def dedisperse(data, shifts, ds_chunk):
+    shifts = np.asarray(shifts, dtype=np.int64)
+    n_chan = data.shape[1]
+    out = np.empty((ds_chunk, n_chan), dtype=np.float32)
+    for j in prange(n_chan):
+        s = shifts[j]
+        for i in range(ds_chunk):
+            out[i, j] = data[s + i, j]
+    return out
+
+
 def preprocess_data(data, exp_cut=5):
 
     data = data.copy()
@@ -173,7 +186,7 @@ def preprocess_data(data, exp_cut=5):
 def predict(model, data, prob=0.6):
     model.eval()
     inputs = torch.from_numpy(data[:, np.newaxis, :, :]).float().to(device)
-    with torch.no_grad():
+    with torch.inference_mode():
         predict_res = model(inputs)
         predict_res = predict_res.softmax(dim=1)[:, 1].cpu().numpy()
         blocks = np.where(predict_res >= prob)[0]
@@ -325,6 +338,9 @@ if __name__ == "__main__":
     # model = SPPResNet(base_model, num_classes=2).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
+
+
+                
     for chunk_idx, (file_idx, data_chunk) in enumerate(data_gen):
         data = data_chunk
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
@@ -333,9 +349,9 @@ if __name__ == "__main__":
         file_name = file_list[file_idx]
         print(f"{chunk_idx+1}/{total_chunk}, file: {file_name}")
         t, f = data.shape
-        new_data = np.zeros((ds_chunk, f))
-        for j in range(freq_reso):
-            new_data[:, j] = data[ds_dds[j]: ds_dds[j]+ds_chunk, j] #de-dispersed
+        data = np.ascontiguousarray(data, dtype=np.float32)
+        ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
+        new_data = dedisperse(data, ds_dds, ds_chunk)
         data = new_data
         t, f = data.shape
         if f % 512:

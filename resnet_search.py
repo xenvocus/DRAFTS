@@ -1,13 +1,13 @@
 import os, re, sys
 import argparse
 import numpy as np
-import pandas as pd
 from astropy.io import fits
 from glob import glob
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import warnings
+from datetime import datetime
 warnings.filterwarnings('ignore')
 plt.style.use('default')
 sns.set_color_codes()
@@ -16,7 +16,7 @@ import torch, torchvision
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #device = torch.device("cpu")
 from BinaryClass.binary_model import SPPResNet, BinaryNet
-
+strt_time = datetime.now()
 
 ### 读取fits文件，只保留两维数据
 def load_fits_file(file_name, reverse_flag=False):
@@ -228,3 +228,5 @@ if __name__ == '__main__':
             plotres           = plot_burst(data[block], save_name, block)
             np.save('{}-{:0>4d}.npy'.format(save_name, block), data[block])
 
+    end_time = datetime.now()
+    print(f'Total time cost: {(end_time - strt_time).seconds} seconds')
