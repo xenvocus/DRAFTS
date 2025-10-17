@@ -2,18 +2,18 @@ import os
 import fitsio
 import argparse
 import numpy as np
+import multiprocessing as mp
 from datetime import datetime
 import torch, torchvision
-# from astropy.io import fits
 from numba import njit, prange
 from glob import glob
 import seaborn as sns
-from rich.progress import track
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 from braceexpand import braceexpand
 from sigpyproc.readers import FilReader
-from BinaryClass.binary_model import SPPResNet, BinaryNet
+from BinaryClass.binary_model import BinaryNet
+from concurrent.futures import ProcessPoolExecutor
 import warnings
 strt_time = datetime.now()
 warnings.filterwarnings('ignore')
@@ -53,6 +53,8 @@ class DataLoader:
         self.data = fil.read_block(start, length).astype(np.float32).T
         # assume no other pols
         self.data = self.data.reshape(-1, 1, fil.header.nchans) # [:, :2, :]
+        if not self.data.flags['C_CONTIGUOUS']:
+            self.data = np.ascontiguousarray(self.data)
         return self.data
 
 
@@ -65,12 +67,14 @@ class DataLoader:
         end_nsub = np.ceil((start + length) / nsblk).astype(int) 
         end_nsamp = start_nsamp + length
         sub_idcs = np.arange(start_nsub, end_nsub)
-        data, h = fitsio.read(self.filename, rows=sub_idcs, 
+        self.data, h = fitsio.read(self.filename, rows=sub_idcs, 
                                 columns=['DATA'], ext=1, header=True)
-        data = data['DATA'].astype(np.float32)
-        data = data.reshape(-1, h['NPOL'], h['NCHAN'])[start_nsamp:end_nsamp, :2, :]
-        data = np.mean(data, axis=1, keepdims=True)
-        return data
+        self.data = self.data['DATA'].astype(np.float32)
+        self.data = self.data.reshape(-1, h['NPOL'], h['NCHAN'])[start_nsamp:end_nsamp, :2, :]
+        self.data = np.mean(self.data, axis=1, keepdims=True)
+        if not self.data.flags['C_CONTIGUOUS']:
+            self.data = np.ascontiguousarray(self.data)
+        return self.data   
 
 
     def load(self, start=0, length=None):
@@ -160,21 +164,18 @@ def handle_regular(data_path, retext):
     return file_list
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def dedisperse(data, shifts, ds_chunk):
-    shifts = np.asarray(shifts, dtype=np.int64)
     n_chan = data.shape[1]
     out = np.empty((ds_chunk, n_chan), dtype=np.float32)
     for j in prange(n_chan):
         s = shifts[j]
-        for i in range(ds_chunk):
-            out[i, j] = data[s + i, j]
+        out[:, j] = data[s:s + ds_chunk, j]
     return out
 
 
 def preprocess_data(data, exp_cut=5):
 
-    data = data.copy()
     data = data + 1
     data /= np.mean(data, axis=0)
     vmin, vmax = np.nanpercentile(data, [exp_cut, 100-exp_cut])
@@ -183,7 +184,7 @@ def preprocess_data(data, exp_cut=5):
     return data
 
 
-def predict(model, data, prob=0.6):
+def predict(model, data, prob=0.5):
     model.eval()
     inputs = torch.from_numpy(data[:, np.newaxis, :, :]).float().to(device)
     with torch.inference_mode():
@@ -193,7 +194,8 @@ def predict(model, data, prob=0.6):
     return blocks
 
 
-def plot_burst(data, filename, block, offset, file_info, output_dir):
+def plot_burst(plot_datas, filename, offset, file_info, output_dir):
+    data, block = plot_datas
     base_name = os.path.basename(os.path.splitext(filename)[0])
     fig          = plt.figure(figsize=(5, 5))
     gs           = gridspec.GridSpec(4, 1)
@@ -226,7 +228,6 @@ def plot_burst(data, filename, block, offset, file_info, output_dir):
     plt.savefig(f'{output_basename}.jpg', format='jpg', dpi=300, bbox_inches='tight')
     plt.close()
     np.save(f'{output_basename}.npy', data)                
-
     return None
 
 
@@ -309,14 +310,30 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso):
         yield len(file_list) - 1, out_buffer
 
 
+def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, queue):
+    """
+    A worker process that runs the data_generator and puts the results in a queue.
+    """
+    try:
+        data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
+        for item in data_gen:
+            queue.put(item)
+    finally:
+        queue.put(None)  # Sentinel value to indicate the end of data
+
+
 if __name__ == "__main__":
     args = get_args()
     DM = args.dm
     data_path = args.input
     save_path = args.output
     prob = args.prob
+    ncpus = 60
+    plot_executor = ProcessPoolExecutor(max_workers=ncpus)
     file_list = handle_regular(data_path, args.re)
     print(f"Will process {len(file_list)} files.")
+    check0 = datetime.now()
+    print(f"loading time {(check0 - strt_time).seconds} s")
     if not os.path.exists(save_path):
         try:
             os.makedirs(save_path)
@@ -332,45 +349,75 @@ if __name__ == "__main__":
     chunk_size = 1024 * 512  # Raw samples to read in each step
     ds_chunk = chunk_size // tdownsamp
     ds_dds = (dds // tdownsamp).astype(np.int64)
-    # Create the generator
-    data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
+    ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
+    
+    # Create a queue for preloading data
+    preload_queue = mp.Queue(maxsize=2)
+
+    # Start the preloading worker process
+    preload_process = mp.Process(target=preload_worker, args=(
+        file_list, chunk_size, dds_size, tdownsamp, freq_reso, preload_queue))
+    preload_process.start()
+
     model = BinaryNet(base_model, num_classes=2).to(device)
     # model = SPPResNet(base_model, num_classes=2).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
+    check1 = datetime.now()
+    print(f"loading model time {(check1 - check0).seconds} s")
 
-
-                
-    for chunk_idx, (file_idx, data_chunk) in enumerate(data_gen):
+    chunk_idx = 0
+    while True:
+        item = preload_queue.get()
+        if item is None:
+            break  # End of data
+        
+        file_idx, data_chunk = item
+        check2 = datetime.now()
+        print(f"loading chunk time {(check2 - check1).seconds} s")
         data = data_chunk
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
         ### read data
         basename, ext = os.path.splitext(file_list[file_idx])
         file_name = file_list[file_idx]
         print(f"{chunk_idx+1}/{total_chunk}, file: {file_name}")
-        t, f = data.shape
-        data = np.ascontiguousarray(data, dtype=np.float32)
-        ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
         new_data = dedisperse(data, ds_dds, ds_chunk)
         data = new_data
         t, f = data.shape
+        check3 = datetime.now()
+        print(f"dedispersion time {(check3 - check2).seconds} s")
         if f % 512:
             pad_width  = 512 - (f % 512)
             pad_array = np.zeros((t, pad_width))
             data = np.hstack([data, pad_array])
         t, f = data.shape
         data = np.mean(data.reshape(t//512, 512, 512, f//512), axis=3)
-        
+        check4 = datetime.now()
+        print(f"downsampling time {(check4 - check3).seconds} s")
         ### predict
-        for j in track(range(data.shape[0]), description="Processing..."):
+        n_blocks = data.shape[0]
+        for j in range(data.shape[0]):
             data[j, :, :] = preprocess_data(data[j, :, :])
+        check5 = datetime.now()
+        print(f"preprocess time {(check5 - check4).seconds} s")
         blocks = predict(model, data, prob)
+        check6 = datetime.now()
+        print(f"predict time {(check6 - check5).seconds} s")
         print(f"Find {len(blocks)} candidates in file {file_name}, chunk idx {chunk_idx}.")
         save_name = basename
+        plot_datas = [(data[block], block) for block in blocks]
+        offset = chunk_idx * chunk_size * time_reso
         for block in blocks:
-            offset = chunk_idx * chunk_size * time_reso
-            plotres = plot_burst(data[block], file_name, block, offset, file_info, save_path)
-            
-                # Ensure we close any figure that was created
+            plot_executor.submit(plot_burst, (data[block], block), 
+                                file_name, offset, file_info, save_path)
+        check7 = datetime.now()
+        print(f"plot time {(check7 - check6).seconds} s")
+        check1 = datetime.now()
+        chunk_idx += 1
+
+    preload_process.join()  # Wait for the preload process to finish
+    plot_executor.shutdown(wait=True)
     end_time = datetime.now()
     print(f"Total processing time: {(end_time - strt_time).seconds} s")
+    
+    
