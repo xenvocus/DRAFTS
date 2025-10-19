@@ -1,5 +1,3 @@
-<h1 align='center'> DRAFTS </h1>
-
 A modified version based on SukiYume's branch, with the following changes:
 - Added support for filterbank files
 - Enabled chunk-based reading to save memory when handle extreme large files
@@ -7,6 +5,9 @@ A modified version based on SukiYume's branch, with the following changes:
 - Converted PyTorch models to ONNX for minor runtime gains
 - Added `Dockerfile` and `.def` for container building
 - Refactored code to match personal style
+
+<h1 align='center'> DRAFTS </h1>
+
 
 <div align="center">
 
@@ -29,6 +30,7 @@ A modified version based on SukiYume's branch, with the following changes:
 [Contributing](#contributing)
 
 </div>
+
 
 ![DRAFTS WorkFlow](./WorkFlow.png)
 
