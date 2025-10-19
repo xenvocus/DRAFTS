@@ -31,7 +31,7 @@ def get_args():
     args.add_argument('-i', '--input', type=str, default='./')
     args.add_argument('-o', '--output', type=str, default='./')
     args.add_argument('-re', type=str, default='*.fits')
-    args.add_argument('-p', '--prob', type=float, default=0.6)
+    args.add_argument('-p', '--prob', type=float, default=0.5)
     args.add_argument('-ds', '--tdownsamp', type=int, default=-1)
     args = args.parse_args()
     return args

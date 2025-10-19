@@ -21,3 +21,5 @@ RUN echo "source activate pytorch" >> ~/.bashrc
 ENV PATH="/opt/conda/envs/pytorch/bin:$PATH"
 
 CMD ["/bin/bash"]
+
+# docker mirror: docker.1ms.run

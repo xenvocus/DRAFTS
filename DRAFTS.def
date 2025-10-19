@@ -1,0 +1,34 @@
+Bootstrap: docker
+From: docker.1ms.run/continuumio/miniconda3:latest
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+    conda env create -f /home/environment.yml
+    conda clean -a
+
+%files
+    environment.yml /home/environment.yml
+    . /home/DRAFTS
+
+%environment
+    export PATH="/opt/conda/envs/pytorch/bin:$PATH"
+
+%runscript
+    cd /home/DRAFTS
+    /bin/bash
+
+%help
+    This container includes a pytorch environment defined by environment.yml
+    and the DRAFTS project code.
+
+    To run an interactive shell:
+        apptainer run pytorch.sif
+
+    To execute a command:
+        apptainer exec pytorch.sif <your_command>
+
+    The pytorch conda environment is automatically on the PATH.

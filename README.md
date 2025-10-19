@@ -2,6 +2,15 @@
 
 <div align="center">
 
+A modified version based on SukiYume's branch, with the following changes:
+- Added support for filterbank files
+- Enabled chunk-based reading to save memory when handle extreme large files
+- Optimized data loading with Numba, vectorization, async execution, and preloading
+- Converted PyTorch models to ONNX for minor runtime gains
+- Added `Dockerfile` and `.def` for container building
+- Refactored code to match personal style
+
+
 ✨ **Deep learning-based RAdio Fast Transient Search pipeline** ✨
 
 [![TransientSearch](https://img.shields.io/badge/TransientSearch-DRAFTS-da282a)](https://github.com/SukiYume/DRAFTS)
