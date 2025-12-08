@@ -156,7 +156,7 @@ if __name__ == "__main__":
     # Create a queue for preloading data
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
     preload_process = mp.Process(target=preload_worker, args=(
-    file_list, chunk_size, dds_size, tdownsamp, freq_reso, preload_queue))
+    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, preload_queue))
     preload_process.start()
     data_source = preload_queue
     ds_dds = (dds // tdownsamp).astype(np.int64)

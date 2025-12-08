@@ -1,14 +1,26 @@
 name: pytorch
 channels:
+  - nvidia 
   - defaults
   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
 dependencies:
   - _libgcc_mutex=0.1
   - bzip2=1.0.8
   - ca-certificates=2025.9.9
+  - certifi=2025.10.5
+  - charset-normalizer=3.3.2
+  - comm=0.2.1
+  - cuda-cudart=11.8.89
+  - cuda-cupti=11.8.87
+  - cuda-libraries=11.8.0
+  - cuda-nvrtc=11.8.89
+  - cuda-nvtx=11.8.86
+  - cuda-opencl=12.4.127
+  - cuda-runtime=11.8.0
+  - cudatoolkit=8.0
   - ld_impl_linux-64=2.40
   - libffi=3.3
-  - libgcc-ng=9.1.0
+  - libgcc-ng
   - libstdcxx-ng=9.1.0
   - ncurses=6.3
   - openssl=1.1.1w
@@ -30,7 +42,6 @@ dependencies:
     - bidict==0.23.1
     - bottleneck==1.6.0
     - braceexpand==0.1.7
-    - certifi==2025.10.5
     - charset-normalizer==3.4.3
     - click==8.3.0
     - cmake==4.1.0

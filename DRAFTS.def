@@ -6,6 +6,9 @@ From: docker.1ms.run/continuumio/miniconda3:latest
         build-essential \
         cmake \
         git \
+        zsh \
+        libgdbm6 \
+        libgdbm-compat4 \
     && rm -rf /var/lib/apt/lists/*
     conda env create -f /home/environment.yml
     conda clean -a
@@ -18,8 +21,9 @@ From: docker.1ms.run/continuumio/miniconda3:latest
     export PATH="/opt/conda/envs/pytorch/bin:$PATH"
 
 %runscript
-    cd /home/DRAFTS
     /bin/bash
+    cd /home/DRAFTS
+
 
 %help
     This container includes a pytorch environment defined by environment.yml
