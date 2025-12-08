@@ -2,8 +2,8 @@ Bootstrap: docker
 From: docker.1ms.run/continuumio/miniconda3:latest
 
 %post
-    apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
+    apt-get -o APT::Sandbox::User=root update && \
+    apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
         cmake \
         git \
         zsh \

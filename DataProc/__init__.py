@@ -5,6 +5,10 @@ import numpy as np
 from collections import deque
 from sigpyproc.readers import FilReader
 
+# 简单的头信息缓存，避免频繁读头开销（仅按文件路径缓存）
+_HEADER_CACHE = {}
+_DATAEXT_CACHE = {}
+
 
 class DataLoader:
     def __init__(self, filename, telescope='Fake', backend='Fake'):
@@ -88,6 +92,21 @@ class DataLoader:
 
 
     def load_fil_header(self):
+        if self.filename in _HEADER_CACHE:
+            cached = _HEADER_CACHE[self.filename]
+            self.header = cached['header']
+            self.time_reso = cached['time_reso']
+            self.freq_reso = cached['freq_reso']
+            self.file_len = cached['file_len']
+            self.tstart = cached['tstart']
+            self.fch1 = cached['fch1']
+            self.foff = cached['foff']
+            self.freq = cached['freq']
+            self._data_revflag = cached['_data_revflag']
+            self._freq_revflag = cached['_freq_revflag']
+            self._reverse()
+            return self.header
+
         fil = FilReader(self.filename)
         self.header = fil.header
         self.time_reso = fil.header.tsamp
@@ -100,19 +119,45 @@ class DataLoader:
         self._data_revflag = False if self.foff > 0 else True
         self._freq_revflag = False if self.foff > 0 else True
         self._reverse()
+        _HEADER_CACHE[self.filename] = {
+            'header': self.header,
+            'time_reso': self.time_reso,
+            'freq_reso': self.freq_reso,
+            'file_len': self.file_len,
+            'tstart': self.tstart,
+            'fch1': self.fch1,
+            'foff': self.foff,
+            'freq': self.freq,
+            '_data_revflag': self._data_revflag,
+            '_freq_revflag': self._freq_revflag,
+        }
         del fil
         return self.header
 
 
     def load_fits_header(self):
+        if self.filename in _HEADER_CACHE:
+            cached = _HEADER_CACHE[self.filename]
+            self.header = cached['header']
+            self.time_reso = cached['time_reso']
+            self.freq_reso = cached['freq_reso']
+            self.file_len = cached['file_len']
+            self.tstart = cached['tstart']
+            self.fch1 = cached['fch1']
+            self.foff = cached['foff']
+            self.freq = cached['freq']
+            self._data_revflag = cached['_data_revflag']
+            self._freq_revflag = cached['_freq_revflag']
+            self.data_ext = _DATAEXT_CACHE.get(self.filename, 1)
+            self._reverse()
+            return self.header
+
         # 主头
         h0 = fitsio.read_header(self.filename)
         # 基于望远镜硬编码映射选择数据扩展号
-        # 注意：不写外部配置，直接在此硬编码映射
         telescope_profiles = {
             'EFFELSBERG': {'fits_data_ext': 2, 'data_column': 'DATA'},
         }
-        # 获取望远镜名称（全部转大写用于匹配）；若无则置空
         tel = None
         try:
             tel = h0['TELESCOP']
@@ -122,14 +167,13 @@ class DataLoader:
             except Exception:
                 tel = None
         tel_key = str(tel).upper() if tel is not None else ''
-        # 默认扩展 1
         data_ext = 1
-        # 简单包含匹配（如 'EFFELSBERG'）
         for k, cfg in telescope_profiles.items():
             if k in tel_key:
                 data_ext = cfg.get('fits_data_ext', 1)
                 break
         self.data_ext = data_ext
+        _DATAEXT_CACHE[self.filename] = data_ext
         # 读取目标扩展头
         h = fitsio.read_header(self.filename, ext=self.data_ext)
         self.header = h
@@ -143,6 +187,18 @@ class DataLoader:
         self._data_revflag = False if self.foff > 0 else True
         self._freq_revflag = False if self.foff > 0 else True
         self._reverse()
+        _HEADER_CACHE[self.filename] = {
+            'header': self.header,
+            'time_reso': self.time_reso,
+            'freq_reso': self.freq_reso,
+            'file_len': self.file_len,
+            'tstart': self.tstart,
+            'fch1': self.fch1,
+            'foff': self.foff,
+            'freq': self.freq,
+            '_data_revflag': self._data_revflag,
+            '_freq_revflag': self._freq_revflag,
+        }
         return self.header
 
 
