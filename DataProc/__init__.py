@@ -372,14 +372,66 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
         yield i, data
 
 
+def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, 
+                      ds_dds, queue):
+    """
+    A worker process that runs data generation, performs preprocessing,
+    and puts ready-to-predict blocks in the queue.
+    
+    This reduces IPC overhead by transmitting smaller, preprocessed data blocks
+    instead of large raw/downsampled arrays.
+    
+    Args:
+        file_list: List of files to process
+        chunk_size: Raw chunk size
+        dds_size: Dedispersion overlap size
+        tdownsamp: Time downsampling factor
+        freq_reso: Number of frequency channels
+        ds_chunk: Downsampled chunk size
+        ds_dds: Downsampled dedispersion shifts array (np.int64)
+        queue: Multiprocessing queue for output
+    """
+    # Import here to avoid issues with multiprocessing/pickle
+    from .utils import dedisperse, data_padding, preprocess_data
+    import numpy as np
+    
+    try:
+        if chunk_size > 0:
+            data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
+        else:
+            data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
+        
+        for file_idx, raw_data in data_gen:
+            # Perform all heavy preprocessing in worker
+            # 1. Dedisperse
+            new_data = dedisperse(raw_data, ds_dds, ds_chunk, use_numba=True)
+            
+            # 2. Pad to multiples of 512
+            data_padded = data_padding(new_data)
+            t, f = data_padded.shape
+            
+            # 3. Reshape and frequency-domain averaging (8x compression)
+            data_blocks = np.mean(data_padded.reshape(t//512, 512, 512, f//512), axis=3)
+            
+            # 4. Vectorized preprocessing
+            data_blocks = preprocess_data(data_blocks)
+            
+            # Now transmit ONLY the preprocessed blocks (much smaller)
+            queue.put((file_idx, data_blocks))
+            
+    finally:
+        queue.put(None)  # Sentinel value to indicate the end of data
+
+
+# Keep the original function name for backward compatibility
 def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, queue):
     """
-    A worker process that runs the data_generator and puts the results in a queue.
-    It decides whether to use chunk-based or file-based processing.
+    Legacy wrapper - redirects to processing_worker.
+    NOTE: This version does NOT do preprocessing (old behavior).
+    Use processing_worker directly for optimized pipeline.
     """
     try:
         if chunk_size > 0:
-            # Use the original chunk-based generator
             data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
         else:
             data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
