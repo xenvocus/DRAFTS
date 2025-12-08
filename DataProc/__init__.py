@@ -452,20 +452,11 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
             data_blocks = preprocess_data(data_blocks)
             
             t1 = time.time()
-<<<<<<< HEAD
             # Real-time profiling output per chunk
             print(f"PROFILE [Worker]: Preprocess Time = {t1 - t0:.4f} s/chunk")
-=======
-            prep_time = t1 - t0
-            total_prep_time += prep_time
-            chunk_count += 1
->>>>>>> a1c97fbfb879fab0a45f0d3dcde1c2fcdf24475e
             
             # Now transmit ONLY the preprocessed blocks (much smaller)
             queue.put((file_idx, data_blocks))
-            
-        if chunk_count > 0:
-            print(f"PROFILE [Worker]: Avg Preprocess Time = {total_prep_time/chunk_count:.4f} s/chunk (over {chunk_count} chunks)")
 
             
     finally:
