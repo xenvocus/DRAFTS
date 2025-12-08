@@ -394,6 +394,18 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
     # Import here to avoid issues with multiprocessing/pickle
     from .utils import dedisperse, data_padding, preprocess_data
     import numpy as np
+    import numba
+    import multiprocessing as mp
+    
+    # Configure Numba threads to avoid oversubscription
+    # Main process uses ~40% for ONNX, we use ~50% for dedisperse
+    try:
+        cpu_count = mp.cpu_count()
+        numba_threads = max(1, int(cpu_count * 0.5))
+        numba.set_num_threads(numba_threads)
+        print(f"Worker: Using {numba_threads} threads for Numba (Dedisperse)")
+    except Exception as e:
+        print(f"Worker: Failed to set Numba threads: {e}")
     
     try:
         if chunk_size > 0:

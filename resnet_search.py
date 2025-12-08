@@ -71,11 +71,11 @@ def model_load(base_model, device):
     
     # Dynamic thread configuration based on available CPU cores
     cpu_count = mp.cpu_count()
-    # Reserve some cores for other processes (data loading, plotting)
-    # Use ~70% of cores for inference, minimum 1
-    inference_threads = max(1, int(cpu_count * 0.7))
+    # Reserve cores for processing_worker (dedispersion) and plotting
+    # Use ~40% of cores for inference (leave ~50% for dedispersing worker)
+    inference_threads = max(1, int(cpu_count * 0.4))
     options.intra_op_num_threads = inference_threads
-    options.inter_op_num_threads = max(1, cpu_count - inference_threads)
+    options.inter_op_num_threads = max(1, int(cpu_count * 0.1))
     
     print(f"ONNX Runtime: Using {inference_threads} intra-op threads, {options.inter_op_num_threads} inter-op threads (Total CPU cores: {cpu_count})")
     
