@@ -372,6 +372,23 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
         yield i, data
 
 
+def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, queue):
+    """
+    A worker process that runs the data_generator and puts the results in a queue.
+    It decides whether to use chunk-based or file-based processing.
+    """
+    try:
+        if chunk_size > 0:
+            # Use the original chunk-based generator
+            data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
+        else:
+            data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
+        for item in data_gen:
+            queue.put(item)
+    finally:
+        queue.put(None)  # Sentinel value to indicate the end of data
+
+
 def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, 
                       ds_dds, queue):
     """
@@ -396,6 +413,7 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
     import numpy as np
     import numba
     import multiprocessing as mp
+    import time
     
     # Configure Numba threads to avoid oversubscription
     # Main process uses ~40% for ONNX, we use ~50% for dedisperse
@@ -413,7 +431,12 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
         else:
             data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
         
+        import time
+        total_prep_time = 0
+        chunk_count = 0
+        
         for file_idx, raw_data in data_gen:
+            t0 = time.time()
             # Perform all heavy preprocessing in worker
             # 1. Dedisperse
             new_data = dedisperse(raw_data, ds_dds, ds_chunk, use_numba=True)
@@ -428,27 +451,23 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
             # 4. Vectorized preprocessing
             data_blocks = preprocess_data(data_blocks)
             
+            t1 = time.time()
+<<<<<<< HEAD
+            # Real-time profiling output per chunk
+            print(f"PROFILE [Worker]: Preprocess Time = {t1 - t0:.4f} s/chunk")
+=======
+            prep_time = t1 - t0
+            total_prep_time += prep_time
+            chunk_count += 1
+>>>>>>> a1c97fbfb879fab0a45f0d3dcde1c2fcdf24475e
+            
             # Now transmit ONLY the preprocessed blocks (much smaller)
             queue.put((file_idx, data_blocks))
             
-    finally:
-        queue.put(None)  # Sentinel value to indicate the end of data
+        if chunk_count > 0:
+            print(f"PROFILE [Worker]: Avg Preprocess Time = {total_prep_time/chunk_count:.4f} s/chunk (over {chunk_count} chunks)")
 
-
-# Keep the original function name for backward compatibility
-def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, queue):
-    """
-    Legacy wrapper - redirects to processing_worker.
-    NOTE: This version does NOT do preprocessing (old behavior).
-    Use processing_worker directly for optimized pipeline.
-    """
-    try:
-        if chunk_size > 0:
-            data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
-        else:
-            data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
-        for item in data_gen:
-            queue.put(item)
+            
     finally:
         queue.put(None)  # Sentinel value to indicate the end of data
 

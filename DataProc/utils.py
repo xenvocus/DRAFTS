@@ -4,46 +4,14 @@ from numba import njit, prange
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 def preprocess_data(data, exp_cut=5):
-    """
-    Preprocess data with normalization and clipping.
-    
-    Args:
-        data: Input array of shape (H, W) for single image or (N, H, W) for batch
-        exp_cut: Percentile cutoff for clipping
-    
-    Returns:
-        Preprocessed array of the same shape as input
-    """
-    # Handle both single and batch inputs
-    is_batch = data.ndim == 3
-    if not is_batch:
-        data = data[np.newaxis, ...]  # Add batch dimension
-    
-    # Ensure we're working with a copy to avoid modifying input
-    data = data.copy()
-    
-    # Add offset
     data = data + 1
-    
-    # Normalize by mean along time axis (axis=1 for batch)
-    # For batch (N, H, W), we normalize each sample independently
-    data /= np.mean(data, axis=(1, 2), keepdims=True)
-    
-    # Compute percentiles and clip for each sample in batch
-    vmin = np.nanpercentile(data, exp_cut, axis=(1, 2), keepdims=True)
-    vmax = np.nanpercentile(data, 100-exp_cut, axis=(1, 2), keepdims=True)
+    data /= np.mean(data, axis=0)
+    vmin, vmax = np.nanpercentile(data, [exp_cut, 100-exp_cut])
     np.clip(data, vmin, vmax, out=data)
-    
-    # Min-max normalization per sample
-    min_val = data.min(axis=(1, 2), keepdims=True)
-    max_val = data.max(axis=(1, 2), keepdims=True)
+    min_val = data.min()
+    max_val = data.max()
     data -= min_val
-    data /= (max_val - min_val + 1e-8)  # Add epsilon to avoid division by zero
-    
-    # Remove batch dimension if input was single
-    if not is_batch:
-        data = data[0]
-    
+    data /= (max_val - min_val)
     return data
 
 
