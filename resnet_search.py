@@ -123,13 +123,19 @@ def main(file_name, data_blocks, offset_base, file_info, model_session, prob,
 
 
 if __name__ == "__main__":
+    # CRITICAL: Set multiprocessing start method to 'spawn' FIRST
+    # This must be done before ANY OpenMP libraries are initialized
+    mp.set_start_method('spawn', force=True)
+    
     args = get_args()
     DM = args.dm
     data_path = args.input
     save_path = args.output
     prob = args.prob
     ncpus = 5
-    plot_executor = ProcessPoolExecutor(max_workers=ncpus)
+    # Use spawn context for ProcessPoolExecutor to avoid OpenMP fork conflict
+    ctx = mp.get_context('spawn')
+    plot_executor = ProcessPoolExecutor(max_workers=ncpus, mp_context=ctx)
     file_list = handle_regular(data_path, args.re)
     print(f"{len(file_list)} file(s) in list.")
     loader = DataLoader(file_list[0])
