@@ -162,14 +162,17 @@ if __name__ == "__main__":
         print(f'Processing data by chunk size:{chunk_size//512}x512.')
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
         ds_chunk = chunk_size // tdownsamp
+    
+    # Calculate ds_dds BEFORE starting worker (it needs this parameter)
+    ds_dds = (dds // tdownsamp).astype(np.int64)
+    ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
+    
     # Create a queue for preprocessed data (Phase 2: using processing_worker)
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
     preload_process = mp.Process(target=processing_worker, args=(
     file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, ds_dds, preload_queue))
     preload_process.start()
     data_source = preload_queue
-    ds_dds = (dds // tdownsamp).astype(np.int64)
-    ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
     base_model = './class_resnet18.onnx'
     model = model_load(base_model, device)
     chunk_idx = 0
