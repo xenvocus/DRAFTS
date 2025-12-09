@@ -44,6 +44,7 @@ def get_args():
     args.add_argument('--onnx_ratio', type=float, default=0.4, help='Ratio of CPU cores for ONNX inference')
     args.add_argument('--worker_ratio', type=float, default=0.5, help='Ratio of CPU cores for Worker preprocessing')
     args.add_argument('--max_chunks', type=int, default=0, help='Stop after processing N chunks (0 = no limit)')
+    args.add_argument('--mask', type=str, default=None, help='Path to channel mask file')
     args = args.parse_args()
     return args
 
@@ -195,7 +196,7 @@ if __name__ == "__main__":
     # Create a queue for preprocessed data (Phase 2: using processing_worker)
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
     preload_process = mp.Process(target=processing_worker, args=(
-    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, ds_dds, preload_queue, args.verbose, args.worker_ratio))
+    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, ds_dds, preload_queue, args.verbose, args.worker_ratio, args.mask))
     preload_process.start()
     data_source = preload_queue
     base_model = './class_resnet18.onnx'
