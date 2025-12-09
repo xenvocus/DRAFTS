@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from glob import glob
 from datetime import datetime
 from braceexpand import braceexpand
-from DataProc import DataLoader, preload_worker
+from DataProc import DataLoader, processing_worker
 from concurrent.futures import ProcessPoolExecutor
 from DataProc.utils import preprocess_data, dedisperse, plot_burst, data_padding
 
@@ -68,24 +68,38 @@ def predict(model_session, data, prob=0.5):
 def model_load(base_model, device):
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    
+    # Dynamic thread configuration based on available CPU cores
+    cpu_count = mp.cpu_count()
+    # Reserve cores for processing_worker (dedispersion) and plotting
+    # Use ~40% of cores for inference (leave ~50% for dedispersing worker)
+    inference_threads = max(1, int(cpu_count * 0.4))
+    options.intra_op_num_threads = inference_threads
+    options.inter_op_num_threads = max(1, int(cpu_count * 0.1))
+    
+    print(f"ONNX Runtime: Using {inference_threads} intra-op threads, {options.inter_op_num_threads} inter-op threads (Total CPU cores: {cpu_count})")
+    
     model = ort.InferenceSession(base_model, options, 
                                     providers=['CPUExecutionProvider'])
     return model
 
 
-def main(file_name, data, offset_base, file_info, model_session, prob,
-                       ds_dds, ds_chunk, tdownsamp, plot_executor, save_path,
+def main(file_name, data_blocks, offset_base, file_info, model_session, prob,
+                       tdownsamp, plot_executor, save_path,
                        block_size, time_reso):
-    """Common data processing, prediction and plot submission routine.
+    """Simplified prediction and plotting routine.
+    
+    Phase 2 Optimization: This function now receives PREPROCESSED data blocks
+    directly from the worker, eliminating dedispersion and preprocessing overhead.
 
     Inputs:
     - file_name: path to the file being processed
-    - data: raw data chunk for this file (will be dedispersed inside)
+    - data_blocks: preprocessed data blocks ready for prediction (from worker)
     - offset_base: base time offset (seconds) to add for plotting
     - file_info: tuple (time_reso, freq_reso, ..., file_len, freq)
     - model_session: ONNX runtime session
     - prob: probability threshold for candidate blocks
-    - ds_dds, ds_chunk, tdownsamp: dedispersion/downsample parameters
+    - tdownsamp: time downsampling factor
     - plot_executor: executor to submit plotting jobs
     - save_path, block_size, time_reso: additional globals used for plotting
 
@@ -112,13 +126,22 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
 
 
 if __name__ == "__main__":
+    # CRITICAL: Set multiprocessing start method to 'spawn' FIRST
+    # This must be done before ANY OpenMP libraries are initialized
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+        
     args = get_args()
     DM = args.dm
     data_path = args.input
     save_path = args.output
     prob = args.prob
     ncpus = 5
-    plot_executor = ProcessPoolExecutor(max_workers=ncpus)
+    # Use spawn context for ProcessPoolExecutor to avoid OpenMP fork conflict
+    ctx = mp.get_context('spawn')
+    plot_executor = ProcessPoolExecutor(max_workers=ncpus, mp_context=ctx)
     file_list = handle_regular(data_path, args.re)
     print(f"{len(file_list)} file(s) in list.")
     loader = DataLoader(file_list[0])
@@ -151,14 +174,16 @@ if __name__ == "__main__":
         print(f'Processing data by chunk size:{chunk_size//512}x512.')
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
         ds_chunk = chunk_size // tdownsamp
-    # Create a queue for preloading data
-    preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
-    preload_process = mp.Process(target=preload_worker, args=(
-    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, preload_queue))
-    preload_process.start()
-    data_source = preload_queue
+    # Calculate ds_dds BEFORE starting worker (it needs this parameter)
     ds_dds = (dds // tdownsamp).astype(np.int64)
     ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
+    
+    # Create a queue for preprocessed data (Phase 2: using processing_worker)
+    preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
+    preload_process = mp.Process(target=processing_worker, args=(
+    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, ds_dds, preload_queue))
+    preload_process.start()
+    data_source = preload_queue
     base_model = './class_resnet18.onnx'
     model = model_load(base_model, device)
     chunk_idx = 0
@@ -166,8 +191,8 @@ if __name__ == "__main__":
         item = data_source.get()
         if item is None:
             break
-        file_idx, data_chunk = item
-        data = data_chunk
+        file_idx, preprocessed_blocks = item
+        
         file_name = file_list[file_idx]
         basename = os.path.basename(file_name)
         if chunk_size > 0:
@@ -181,8 +206,8 @@ if __name__ == "__main__":
             chunk_str = ""
             file_idx += 1
         print(f"{progress_str}, file: {basename}")
-        n_found = main(file_name, data, offset, file_info, model,
-                                    prob, ds_dds, ds_chunk, tdownsamp,
+        n_found = main(file_name, preprocessed_blocks, offset, file_info, model,
+                                    prob, tdownsamp,
                                     plot_executor, save_path, block_size, time_reso)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
