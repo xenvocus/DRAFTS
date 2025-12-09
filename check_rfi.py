@@ -1,3 +1,15 @@
+import os
+
+# We set the cache directory to a local writable folder to prevent Numba caching errors.
+if 'NUMBA_CACHE_DIR' not in os.environ:
+    numba_cache_dir = os.path.join(os.getcwd(), 'numba_cache')
+    try:
+        os.makedirs(numba_cache_dir, exist_ok=True)
+        os.environ['NUMBA_CACHE_DIR'] = numba_cache_dir
+    except Exception:
+        # If we can't create a cache dir, disable caching
+        os.environ['NUMBA_DISABLE_CACHE'] = '1'
+
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
