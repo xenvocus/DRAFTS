@@ -21,7 +21,9 @@ from DataProc import DataLoader
 
 def get_args():
     parser = argparse.ArgumentParser(description="Quickly check RFI masking effect by plotting a random chunk.")
-    parser.add_argument('-i', '--input', type=str, default='./*.fits', help='Input file pattern (support brace expansion)')
+    parser.add_argument('-i', '--input', type=str, default=None, help='Input file pattern (support brace expansion)')
+    parser.add_argument('-re', type=str, default='*.fits', help='Recursive file pattern (for compatibility)')
+    parser.add_argument('-dm', '--dm', type=float, default=0, help='Dummy DM (ignored, for compatibility)')
     parser.add_argument('--mask', type=str, default=None, help='Path to channel mask file')
     parser.add_argument('-n', '--length', type=int, default=2048, help='Number of time samples to read')
     parser.add_argument('-s', '--seed', type=int, default=None, help='Random seed')
@@ -44,9 +46,10 @@ def main():
         np.random.seed(args.seed)
 
     # 1. Get file list
-    file_list = handle_regular(args.input)
+    input_pattern = args.input if args.input else args.re
+    file_list = handle_regular(input_pattern)
     if len(file_list) == 0:
-        print(f"No files found matching {args.input}")
+        print(f"No files found matching {input_pattern}")
         return
 
     # 2. Randomly select a file
