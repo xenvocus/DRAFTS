@@ -115,9 +115,8 @@ def main(file_name, data_blocks, offset_base, file_info, model_session, prob,
     t0 = time.time()
     blocks = predict(model_session, data_blocks, prob)
     t1 = time.time()
-    t1 = time.time()
     if verbose:
-        print(f"PROFILE [Main]: Inference Time = {t1 - t0:.4f} s/chunk")
+        print(f"PROFILE [Main]: Inference Time = {t1 - t0:.4f} s/chunk", flush=True)
     
     # Load header for timestamp info
     load = DataLoader(file_name)
