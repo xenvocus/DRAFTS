@@ -1,15 +1,10 @@
 import os
 
-# Fix for Numba cache error: "cannot cache function ...: no locator available"
-# This happens when the user does not have write permissions to the library directory.
 # We set the cache directory to a local writable folder.
-numba_cache_dir = os.path.join(os.getcwd(), 'numba_cache')
-try:
+if 'NUMBA_CACHE_DIR' not in os.environ:
+    numba_cache_dir = os.path.join(os.getcwd(), 'numba_cache')
     os.makedirs(numba_cache_dir, exist_ok=True)
     os.environ['NUMBA_CACHE_DIR'] = numba_cache_dir
-    print(f"Set NUMBA_CACHE_DIR to {numba_cache_dir}")
-except Exception as e:
-    print(f"Warning: Could not set NUMBA_CACHE_DIR: {e}")
 
 import torch
 import warnings
