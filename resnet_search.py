@@ -33,6 +33,10 @@ def get_args():
     args.add_argument('-re', type=str, default='*.fits')
     args.add_argument('-p', '--prob', type=float, default=0.5)
     args.add_argument('-ds', '--tdownsamp', type=int, default=-1)
+    args.add_argument('-v', '--verbose', action='store_true', help='Show detailed profiling information')
+    args.add_argument('--onnx_ratio', type=float, default=0.4, help='Ratio of CPU cores for ONNX inference')
+    args.add_argument('--worker_ratio', type=float, default=0.5, help='Ratio of CPU cores for Worker preprocessing')
+    args.add_argument('--max_chunks', type=int, default=0, help='Stop after processing N chunks (0 = no limit)')
     args = args.parse_args()
     return args
 
@@ -65,19 +69,19 @@ def predict(model_session, data, prob=0.5):
     return blocks
 
 
-def model_load(base_model, device):
+def model_load(base_model, device, onnx_ratio=0.4):
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     
     # Dynamic thread configuration based on available CPU cores
     cpu_count = mp.cpu_count()
     # Reserve cores for processing_worker (dedispersion) and plotting
-    # Use ~40% of cores for inference (leave ~50% for dedispersing worker)
-    inference_threads = max(1, int(cpu_count * 0.4))
+    inference_threads = max(1, int(cpu_count * onnx_ratio))
     options.intra_op_num_threads = inference_threads
+    # Remaining for OS/Plotting/overhead, typically small
     options.inter_op_num_threads = max(1, int(cpu_count * 0.1))
     
-    print(f"ONNX Runtime: Using {inference_threads} intra-op threads, {options.inter_op_num_threads} inter-op threads (Total CPU cores: {cpu_count})")
+    print(f"ONNX Runtime: Using {inference_threads} threads ({onnx_ratio*100:.1f}%) for inference")
     
     model = ort.InferenceSession(base_model, options, 
                                     providers=['CPUExecutionProvider'])
@@ -86,7 +90,7 @@ def model_load(base_model, device):
 
 def main(file_name, data_blocks, offset_base, file_info, model_session, prob,
                        tdownsamp, plot_executor, save_path,
-                       block_size, time_reso):
+                       block_size, time_reso, verbose=False):
     """Simplified prediction and plotting routine.
     
     Phase 2 Optimization: This function now receives PREPROCESSED data blocks
@@ -111,7 +115,9 @@ def main(file_name, data_blocks, offset_base, file_info, model_session, prob,
     t0 = time.time()
     blocks = predict(model_session, data_blocks, prob)
     t1 = time.time()
-    print(f"PROFILE [Main]: Inference Time = {t1 - t0:.4f} s/chunk")
+    t1 = time.time()
+    if verbose:
+        print(f"PROFILE [Main]: Inference Time = {t1 - t0:.4f} s/chunk")
     
     # Load header for timestamp info
     load = DataLoader(file_name)
@@ -143,6 +149,8 @@ if __name__ == "__main__":
     ctx = mp.get_context('spawn')
     plot_executor = ProcessPoolExecutor(max_workers=ncpus, mp_context=ctx)
     file_list = handle_regular(data_path, args.re)
+    if args.max_chunks > 0:
+        print(f"NOTICE: Will stop after processing {args.max_chunks} chunks.")
     print(f"{len(file_list)} file(s) in list.")
     loader = DataLoader(file_list[0])
     file_info = loader.get_params()
@@ -181,12 +189,13 @@ if __name__ == "__main__":
     # Create a queue for preprocessed data (Phase 2: using processing_worker)
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
     preload_process = mp.Process(target=processing_worker, args=(
-    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, ds_dds, preload_queue))
+    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, ds_dds, preload_queue, args.verbose, args.worker_ratio))
     preload_process.start()
     data_source = preload_queue
     base_model = './class_resnet18.onnx'
-    model = model_load(base_model, device)
+    model = model_load(base_model, device, args.onnx_ratio)
     chunk_idx = 0
+    total_processed_chunks = 0
     while True:
         item = data_source.get()
         if item is None:
@@ -200,6 +209,7 @@ if __name__ == "__main__":
             progress_str = f"{chunk_idx+1}/{total_chunk}"
             chunk_str = f", chunk idx {chunk_idx}"
             chunk_idx += 1
+
         else:
             offset = 0
             progress_str = f"{file_idx+1}/{total_chunk}"
@@ -208,8 +218,13 @@ if __name__ == "__main__":
         print(f"{progress_str}, file: {basename}")
         n_found = main(file_name, preprocessed_blocks, offset, file_info, model,
                                     prob, tdownsamp,
-                                    plot_executor, save_path, block_size, time_reso)
+                                    plot_executor, save_path, block_size, time_reso, verbose=args.verbose)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
+        
+        total_processed_chunks += 1
+        if args.max_chunks > 0 and total_processed_chunks >= args.max_chunks:
+            print(f"Stopping after {total_processed_chunks} chunks as requested.")
+            break
     preload_process.join()  # Wait for the preload process to finish
     plot_executor.shutdown(wait=True)
     end_time = datetime.now()

@@ -389,8 +389,9 @@ def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chu
         queue.put(None)  # Sentinel value to indicate the end of data
 
 
+ 
 def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, 
-                      ds_dds, queue):
+                      ds_dds, queue, verbose=False, worker_ratio=0.5):
     """
     A worker process that runs data generation, performs preprocessing,
     and puts ready-to-predict blocks in the queue.
@@ -419,9 +420,9 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
     # Main process uses ~40% for ONNX, we use ~50% for dedisperse
     try:
         cpu_count = mp.cpu_count()
-        numba_threads = max(1, int(cpu_count * 0.5))
+        numba_threads = max(1, int(cpu_count * worker_ratio))
         numba.set_num_threads(numba_threads)
-        print(f"Worker: Using {numba_threads} threads for Numba (Dedisperse)")
+        print(f"Worker: Using {numba_threads} threads ({worker_ratio*100:.1f}%) for Numba (Dedisperse)")
     except Exception as e:
         print(f"Worker: Failed to set Numba threads: {e}")
     
@@ -453,7 +454,8 @@ def processing_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_
             
             t1 = time.time()
             # Real-time profiling output per chunk
-            print(f"PROFILE [Worker]: Preprocess Time = {t1 - t0:.4f} s/chunk")
+            if verbose:
+                print(f"PROFILE [Worker]: Preprocess Time = {t1 - t0:.4f} s/chunk")
             
             # Now transmit ONLY the preprocessed blocks (much smaller)
             queue.put((file_idx, data_blocks))
