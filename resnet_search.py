@@ -19,7 +19,7 @@ from datetime import datetime
 from braceexpand import braceexpand
 from DataProc import DataLoader, preload_worker
 from concurrent.futures import ProcessPoolExecutor
-from DataProc.utils import preprocess_data, dedisperse, plot_burst, data_padding
+from DataProc.utils import preprocess_data, dedisperse, plot_burst, data_padding, load_mask
 
 strt_time = datetime.now()
 warnings.filterwarnings('ignore')
@@ -83,7 +83,7 @@ def model_load(base_model, device):
 
 def main(file_name, data, offset_base, file_info, model_session, prob,
                        ds_dds, ds_chunk, tdownsamp, plot_executor, save_path,
-                       block_size, time_reso):
+                       block_size, time_reso, mask_block_indices=None):
     """Common data processing, prediction and plot submission routine.
 
     Inputs:
@@ -105,6 +105,11 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     t, f = data_padded.shape
     # reshape into blocks of 512x512 (time-block x 512 x freq-blocks)
     data_blocks = np.mean(data_padded.reshape(t//512, 512, 512, f//512), axis=3)
+    
+    # Apply Mask if exists (set masked block columns to 0)
+    if mask_block_indices is not None and len(mask_block_indices) > 0:
+        data_blocks[:, :, mask_block_indices] = 0
+
     # preprocess per block
     for j in range(data_blocks.shape[0]):
         data_blocks[j, :, :] = preprocess_data(data_blocks[j, :, :])
@@ -163,8 +168,21 @@ if __name__ == "__main__":
         ds_chunk = chunk_size // tdownsamp
     # Create a queue for preloading data
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
+    mask_block_indices = None
+    if args.mask:
+        mask_chans = load_mask(args.mask)
+        if mask_chans is not None:
+             # Map raw channel indices to block column indices (512 columns)
+             # Block column j corresponds to raw channels [j*factor, (j+1)*factor)
+             # factor = freq_reso / 512
+             factor = freq_reso / 512.0
+             mask_block_indices = np.unique((mask_chans / factor).astype(int))
+             # Ensure indices are within [0, 512)
+             mask_block_indices = mask_block_indices[(mask_block_indices >= 0) & (mask_block_indices < 512)]
+             print(f"Mask loaded: {len(mask_chans)} channels mapped to {len(mask_block_indices)} block columns.")
+
     preload_process = mp.Process(target=preload_worker, args=(
-    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, preload_queue, args.mask))
+    file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, preload_queue))
     preload_process.start()
     data_source = preload_queue
     ds_dds = (dds // tdownsamp).astype(np.int64)
@@ -193,7 +211,7 @@ if __name__ == "__main__":
         print(f"{progress_str}, file: {basename}")
         n_found = main(file_name, data, offset, file_info, model,
                                     prob, ds_dds, ds_chunk, tdownsamp,
-                                    plot_executor, save_path, block_size, time_reso)
+                                    plot_executor, save_path, block_size, time_reso, mask_block_indices)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
     plot_executor.shutdown(wait=True)

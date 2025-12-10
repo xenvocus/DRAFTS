@@ -7,34 +7,12 @@ from sigpyproc.readers import FilReader
 
 
 class DataLoader:
-    def __init__(self, filename, mask_file=None, telescope='Fake', backend='Fake'):
+    def __init__(self, filename, telescope='Fake', backend='Fake'):
         self.filename = filename
         self.telescope = telescope
         self.backend = backend
         self.data_ext = None  # FITS 数据所在的表扩展号（按望远镜映射/自动兜底）
-        self.mask_file = mask_file
-        self.mask_chans = self._load_mask()
-
-    def _load_mask(self):
-        if self.mask_file and os.path.exists(self.mask_file):
-            try:
-                indices = []
-                with open(self.mask_file, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith('#'): continue
-                        # Support comma separated and ranges like 100-200
-                        parts = line.replace(',', ' ').split()
-                        for p in parts:
-                            if '-' in p:
-                                start, end = map(int, p.split('-'))
-                                indices.extend(range(start, end + 1))
-                            else:
-                                indices.append(int(p))
-                return np.unique(np.array(indices, dtype=int))
-            except Exception as e:
-                print(f"Warning: Failed to load mask file {self.mask_file}: {e}")
-        return None
+        self.data_ext = None  # FITS 数据所在的表扩展号（按望远镜映射/自动兜底）
 
 
     def load_fil_file(self, start=0, length=None):
@@ -83,12 +61,6 @@ class DataLoader:
             self.data = self.load_fits_file(start, length)
         else:
             raise ValueError(f"Unsupported file extension: {ext}")
-        if self.mask_chans is not None and len(self.mask_chans) > 0 and hasattr(self, 'data'):
-            n_chans = self.data.shape[2]
-            valid_mask = self.mask_chans[self.mask_chans < n_chans]
-            # Set masked channels to 0
-            self.data[..., valid_mask] = 0
-
         self._reverse()
         return self.data
 
@@ -183,7 +155,7 @@ class DataLoader:
             return (self.time_reso, self.freq_reso, self.tstart, self.file_len, self.freq)
 
 
-def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_file_idx=0, mask_file=None):
+def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_file_idx=0):
     """
     A generator responsible for loading, concatenating, downsampling, 
     and producing data blocks as needed. It handles file boundaries and 
@@ -219,7 +191,7 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
 
     while file_idx < len(file_list):
         file_pointer = file_idx
-        loader = DataLoader(file_list[file_pointer], mask_file=mask_file)
+        loader = DataLoader(file_list[file_pointer])
         loader.load_header()
 
         # 从当前文件开始，累积读取直至达到 target_raw 或到达列表末尾
@@ -229,7 +201,7 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
         cur_idx = file_idx
         cur_ptr = pointer
         while remaining > 0 and cur_idx < len(file_list):
-            cur_loader = DataLoader(file_list[cur_idx], mask_file=mask_file)
+            cur_loader = DataLoader(file_list[cur_idx])
             cur_loader.load_header()
             can_take = max(0, cur_loader.file_len - cur_ptr)
             if can_take > 0:
@@ -299,17 +271,17 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
         yield len(file_list) - 1, out_buffer
 
 
-def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk, mask_file=None):
+def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
     """
     A generator that loads and processes data file by file, handling concatenation
     with the next file for dedispersion overlap.
     """
-    current_data = DataLoader(file_list[0], mask_file=mask_file).load()
+    current_data = DataLoader(file_list[0]).load()
     for i in range(len(file_list)):
         # Load current file completely
         # If there is a next file, load the beginning of it for overlap
         if i + 1 < len(file_list):
-            next_loader = DataLoader(file_list[i+1], mask_file=mask_file)
+            next_loader = DataLoader(file_list[i+1])
             # Here we assume next file is long enough, TODO: handle case if not enough
             next_data = next_loader.load()
             # 若下一个文件不足 dds_size，则在 overlap 尾部补零
@@ -345,7 +317,7 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk, mask_fil
         yield i, data
 
 
-def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, queue, mask_file=None):
+def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, queue):
     """
     A worker process that runs the data_generator and puts the results in a queue.
     It decides whether to use chunk-based or file-based processing.
@@ -353,9 +325,9 @@ def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chu
     try:
         if chunk_size > 0:
             # Use the original chunk-based generator
-            data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, mask_file=mask_file)
+            data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
         else:
-            data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk, mask_file=mask_file)
+            data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
         for item in data_gen:
             queue.put(item)
     finally:

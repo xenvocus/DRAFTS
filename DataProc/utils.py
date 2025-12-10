@@ -3,6 +3,27 @@ import numpy as np
 from numba import njit, prange
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
+def load_mask(mask_file):
+    if mask_file and os.path.exists(mask_file):
+        try:
+            indices = []
+            with open(mask_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'): continue
+                    parts = line.replace(',', ' ').split()
+                    for p in parts:
+                        if '-' in p:
+                            start, end = map(int, p.split('-'))
+                            indices.extend(range(start, end + 1))
+                        else:
+                            indices.append(int(p))
+            return np.unique(np.array(indices, dtype=int))
+        except Exception as e:
+            print(f"Warning: Failed to load mask file {mask_file}: {e}")
+    return None
+
+
 def preprocess_data(data, exp_cut=5):
     data = data + 1
     data /= np.mean(data, axis=0)
