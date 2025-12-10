@@ -91,7 +91,10 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     w, h         = data.shape
     profile      = np.mean(data, axis=1)
     peak_time    = offset + np.argmax(profile) * time_reso * tdownsamp
-    all_time = peak_time + (file_tstart - tstart) * 86400
+    # all_time calculation might be legacy, but peak_time is seconds from tstart (first file)
+    # So Burst MJD = tstart + peak_time / 86400
+    burst_mjd = tstart + peak_time / 86400.0
+    
     plt.subplots_adjust(wspace=0, hspace=0)
     plt.subplot(gs[0, 0])
     plt.plot(profile, color='royalblue', alpha=0.8, lw=1)
@@ -108,7 +111,8 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     plt.xticks(np.linspace(0, w, 6), np.round(offset + np.arange(6)/5 * time_reso * tdownsamp * 512, 2))
     plt.xlabel('Time (s)')
     plt.ylabel('Frequency (MHz)')
-    output_basename = os.path.join(output_dir, f'{base_name}-{all_time:.4f}-{peak_time:.4f}')
+    # Updated filename format with MJD
+    output_basename = os.path.join(output_dir, f'{base_name}_MJD{burst_mjd:.6f}_{peak_time:.4f}s')
     plt.savefig(f'{output_basename}.jpg', format='jpg', dpi=300, bbox_inches='tight')
     plt.close()
     np.save(f'{output_basename}.npy', data)                
