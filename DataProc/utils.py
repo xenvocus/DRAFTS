@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 from numba import njit, prange
 import matplotlib.pyplot as plt
@@ -20,7 +21,7 @@ def load_mask(mask_file):
                             indices.append(int(p))
             return np.unique(np.array(indices, dtype=int))
         except Exception as e:
-            print(f"Warning: Failed to load mask file {mask_file}: {e}")
+            print(f"警告: 无法加载掩膜文件 {mask_file}: {e}")
     return None
 
 
@@ -37,8 +38,8 @@ def preprocess_data(data, exp_cut=5):
 
 
 def data_padding(data):
-    ''' Pad data to be multiple of 512 in both dimensions, 
-        assuming 2D array input with shape (time, freq). '''
+    ''' 将数据填充为 512 的倍数 (如果有必要)，
+        假设输入为 (time, freq) 形状的 2D 数组。 '''
     t, f = data.shape
     if f % 512:
         pad_width = 512 - (f % 512)
@@ -51,10 +52,10 @@ def data_padding(data):
 
 def dedisperse(data, shifts, ds_chunk, use_numba=True):
     """
-    Dispatcher function for dedispersion.
+    消色散分发函数。
 
-    Calls the Numba-accelerated version by default. If use_numba is False,
-    it calls the pure NumPy version to avoid JIT compilation overhead.
+    默认调用 Numba 加速版本。如果 use_numba 为 False，
+    它将调用纯 NumPy 版本以避免 JIT 编译开销。
     """
     if use_numba:
         return _dedisperse_numba(data, shifts, ds_chunk)
@@ -73,7 +74,7 @@ def _dedisperse_numba(data, shifts, ds_chunk):
 
 
 def _dedisperse_numpy(data, shifts, ds_chunk):
-    """Internal pure NumPy version."""
+    """内部纯 NumPy 版本。"""
     n_chan = data.shape[1]
     out = np.empty((ds_chunk, n_chan), dtype=np.float32)
     for j in range(n_chan):
@@ -91,8 +92,8 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     w, h         = data.shape
     profile      = np.mean(data, axis=1)
     peak_time    = offset + np.argmax(profile) * time_reso * tdownsamp
-    # all_time calculation might be legacy, but peak_time is seconds from tstart (first file)
-    # So Burst MJD = tstart + peak_time / 86400
+    # all_time 计算可能是遗留代码，但 peak_time 是相对于 tstart (第一个文件) 的秒数
+    # 因此 Burst MJD = tstart + peak_time / 86400
     burst_mjd = tstart + peak_time / 86400.0
     
     plt.subplots_adjust(wspace=0, hspace=0)
@@ -111,8 +112,11 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     plt.xticks(np.linspace(0, w, 6), np.round(offset + np.arange(6)/5 * time_reso * tdownsamp * 512, 2))
     plt.xlabel('Time (s)')
     plt.ylabel('Frequency (MHz)')
-    # Updated filename format with MJD
-    output_basename = os.path.join(output_dir, f'{base_name}_MJD{burst_mjd:.6f}_{peak_time:.4f}s')
+    # 更新文件名格式，包含 MJD
+    # 增加跨平台文件命名安全性处理：替换 Windows/Linux 非法字符为连字符
+    raw_name = f'{base_name}_MJD{burst_mjd:.6f}_{peak_time:.4f}s'
+    safe_name = re.sub(r'[<>:"/\\|?*]', '-', raw_name)
+    output_basename = os.path.join(output_dir, safe_name)
     plt.savefig(f'{output_basename}.jpg', format='jpg', dpi=300, bbox_inches='tight')
     plt.close()
     np.save(f'{output_basename}.npy', data)                

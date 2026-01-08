@@ -19,7 +19,7 @@ class DataLoader:
         self.load_fil_header()
         fil = FilReader(self.filename)
         self.data = fil.read_block(start, length).astype(np.float32).T
-        # assume no other pols
+        # 假设没有其他极化
         self.data = self.data.reshape(-1, 1, fil.header.nchans) # [:, :2, :]
         if not self.data.flags['C_CONTIGUOUS']:
             self.data = np.ascontiguousarray(self.data)
@@ -27,7 +27,7 @@ class DataLoader:
 
 
     def load_fits_file(self, start=0, length=None):
-        """Load a portion of the FITS file specified by start and length."""
+        """加载由 start 和 length 指定的 FITS 文件部分。"""
         
         if start == 0 and length is None:
             # 统一依据 self.data_ext 读取
@@ -157,21 +157,19 @@ class DataLoader:
 
 def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_file_idx=0):
     """
-    A generator responsible for loading, concatenating, downsampling, 
-    and producing data blocks as needed. It handles file boundaries and 
-    prepares data with overlapping regions for dedispersion.
+    负责加载、拼接、降采样和按需生成数据块的生成器。
+    它处理文件边界并准备具有消色散重叠区域的数据。
 
     Args:
-        file_list (list): List of file paths to process.
-        chunk_size (int): Target length of each processing block (before downsampling).
-        dds_size (int): Additional overlapping data length required for dedispersion 
-        (before downsampling).
-        tdownsamp (int): Time downsampling factor.
-        freq_reso (int): Number of frequency channels.
-        start_file_idx (int): Starting file index.
+        file_list (list): 要处理的文件路径列表。
+        chunk_size (int): 每个处理块的目标长度 (降采样前)。
+        dds_size (int): 消色散所需的额外重叠数据长度 (降采样前)。
+        tdownsamp (int): 时间降采样因子。
+        freq_reso (int): 频率通道数。
+        start_file_idx (int): 起始文件索引。
 
     Yields:
-        tuple: (Current file index, data block for processing)
+        tuple: (当前文件索引, 待处理数据块)
     """
     buffer = deque()
 
@@ -229,9 +227,15 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
             break
 
         raw_data = np.vstack(raw_parts)
-        # 如果到达列表末尾仍不足 target_raw，则末尾补零
+        # 如果到达列表末尾仍不足 target_raw，则末尾补零 (循环填充 Wrap padding)
         if remaining > 0:
-            pad = np.zeros((remaining, raw_data.shape[1], raw_data.shape[2]), dtype=raw_data.dtype)
+            if raw_data.shape[0] > 0:
+                pad_source = raw_data
+                while pad_source.shape[0] < remaining:
+                    pad_source = np.vstack([pad_source, pad_source])
+                pad = pad_source[:remaining]
+            else:
+                 pad = np.zeros((remaining, raw_data.shape[1], raw_data.shape[2]), dtype=raw_data.dtype)
             raw_data = np.vstack([raw_data, pad])
             # 更新到列表尾部状态
             file_idx = len(file_list)  # 触发后续结束
@@ -243,70 +247,100 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
 
         if raw_data.size == 0:
             break
-        # Downsampling
+        # 降采样 Downsampling
         ds_len = raw_data.shape[0] // tdownsamp
         if ds_len == 0: continue
         data = np.mean(raw_data[:ds_len * tdownsamp].reshape(ds_len, tdownsamp, 
                         raw_data.shape[1], freq_reso), axis=(1, 2)).astype(np.float32)
-        # Add the downsampled data to the buffer
+        # 将降采样后的数据添加到缓冲区
         buffer.extend(data)
         ds_chunk = chunk_size // tdownsamp
         ds_dds = dds_size // tdownsamp
-        # Produce a data block with overlap when the buffer is large enough
+        # 当缓冲区足够大时，生成带有重叠的数据块
         while len(buffer) >= ds_chunk + ds_dds:
-            # Create a numpy array from the deque for processing
+            # 从 deque 创建 numpy 数组以进行处理
             out_buffer = np.array(list(itertools.islice(buffer, 0, ds_chunk + ds_dds)))
             yield file_pointer, out_buffer
-            # Remove the produced data from the buffer by popping from the left
+            # 从左侧弹出，从缓冲区中移除已生成的数据
             for _ in range(ds_chunk):
                 buffer.popleft()
-    # Handle remaining data in the buffer at the end of the file list
+    # 在文件列表末尾处理缓冲区中的剩余数据
     if len(buffer) > 0:
         final_len = ds_chunk + ds_dds
         out_buffer = np.array(list(itertools.islice(buffer, 0, len(buffer))))
         if len(buffer) < final_len:
             pad_width = final_len - len(buffer)
-            padding = np.zeros((pad_width, out_buffer.shape[1]), dtype=out_buffer.dtype)
+            # 从缓冲区本身进行循环填充 (Wrap padding)
+            buffer_arr = np.array(list(itertools.islice(buffer, 0, len(buffer))))
+            if buffer_arr.shape[0] > 0:
+                 pad_source = buffer_arr
+                 while pad_source.shape[0] < pad_width:
+                     pad_source = np.vstack([pad_source, pad_source])
+                 padding = pad_source[:pad_width]
+            else:
+                 padding = np.zeros((pad_width, out_buffer.shape[1]), dtype=out_buffer.dtype)
             out_buffer = np.vstack([out_buffer, padding])
         yield len(file_list) - 1, out_buffer
 
 
 def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
     """
-    A generator that loads and processes data file by file, handling concatenation
-    with the next file for dedispersion overlap.
+    逐个文件加载和处理数据的生成器，处理与下一个文件的拼接以进行消色散重叠。
     """
     current_data = DataLoader(file_list[0]).load()
     for i in range(len(file_list)):
-        # Load current file completely
-        # If there is a next file, load the beginning of it for overlap
+        # 完整加载当前文件
+        # 如果有下一个文件，加载其开头以行重叠
         if i + 1 < len(file_list):
             next_loader = DataLoader(file_list[i+1])
-            # Here we assume next file is long enough, TODO: handle case if not enough
+            # 假设下一个文件足够长，TODO: 处理不够长的情况
             next_data = next_loader.load()
-            # 若下一个文件不足 dds_size，则在 overlap 尾部补零
+            # 若下一个文件不足 dds_size，则在 overlap 尾部补零/循环
             if next_data.shape[0] >= dds_size:
                 overlap = next_data[:dds_size]
             else:
                 pad_len = dds_size - next_data.shape[0]
-                padshape = ((pad_len, 0), (0, 0), (0, 0))
-                overlap = np.pad(next_data, padshape, mode='constant', constant_values=0)[:dds_size]
+                # 循环填充 Wrap padding
+                if next_data.shape[0] > 0:
+                     pad_source = next_data
+                     while pad_source.shape[0] < pad_len:
+                         pad_source = np.vstack([pad_source, pad_source])
+                     pad = pad_source[:pad_len]
+                     overlap = np.vstack([next_data, pad])
+                else:
+                    overlap = np.zeros((dds_size, next_data.shape[1], next_data.shape[2]), dtype=next_data.dtype)
+                
             combined_data = np.vstack([current_data, overlap])
             current_data = next_data
         else:
-            # For the last file, pad with zeros to maintain consistent size
-            padshape = ((0, dds_size), (0, 0), (0, 0))
-            combined_data = np.pad(current_data, padshape, mode='constant', constant_values=0)
+            # 对于最后一个文件，用零填充/循环包裹以保持一致的大小
+            # Wrap padding: 将 current_data 开头包裹到结尾
+            padshape = ((0, dds_size), (0, 0), (0, 0)) # 默认后备
+            if current_data.shape[0] > 0:
+                 pad_source = current_data
+                 while pad_source.shape[0] < dds_size:
+                     pad_source = np.vstack([pad_source, pad_source])
+                 pad = pad_source[:dds_size]
+                 combined_data = np.vstack([current_data, pad])
+            else:
+                 combined_data = np.pad(current_data, padshape, mode='constant', constant_values=0)
 
         # 保证长度足以覆盖 ds_chunk + ds_dds（原始采样域）
         ds_dds = dds_size // tdownsamp
         target_raw = (ds_chunk + ds_dds) * tdownsamp
         if combined_data.shape[0] < target_raw:
             pad_len = target_raw - combined_data.shape[0]
-            padshape = ((0, pad_len), (0, 0), (0, 0))
-            combined_data = np.pad(combined_data, padshape, mode='constant', constant_values=0)
+            if combined_data.shape[0] > 0:
+                 pad_source = combined_data
+                 while pad_source.shape[0] < pad_len:
+                     pad_source = np.vstack([pad_source, pad_source])
+                 pad = pad_source[:pad_len]
+                 combined_data = np.vstack([combined_data, pad])
+            else:
+                 padshape = ((0, pad_len), (0, 0), (0, 0))
+                 combined_data = np.pad(combined_data, padshape, mode='constant', constant_values=0)
 
-        # Downsample
+        # 降采样 Downsample
         ds_len = combined_data.shape[0] // tdownsamp
         if ds_len == 0:
             continue
@@ -319,18 +353,18 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
 
 def preload_worker(file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, queue):
     """
-    A worker process that runs the data_generator and puts the results in a queue.
-    It decides whether to use chunk-based or file-based processing.
+    运行 data_generator 并将结果放入队列的工作进程。
+    它决定使用基于块的处理还是基于文件的处理。
     """
     try:
         if chunk_size > 0:
-            # Use the original chunk-based generator
+            # 使用原始的基于块的生成器
             data_gen = data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso)
         else:
             data_gen = file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk)
         for item in data_gen:
             queue.put(item)
     finally:
-        queue.put(None)  # Sentinel value to indicate the end of data
+        queue.put(None)  # 哨兵值指示数据结束
 
 
