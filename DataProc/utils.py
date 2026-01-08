@@ -91,7 +91,19 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     time_reso, freq_reso, tstart, _, freq = file_info
     w, h         = data.shape
     profile      = np.mean(data, axis=1)
-    peak_time    = offset + np.argmax(profile) * time_reso * tdownsamp
+    
+    # 校正 peak_time 计算：
+    # np.argmax(profile) 返回的是缩放后图片的时间索引 (范围 0-511)
+    # 我们需要将其映射回真实的物理时长
+    # 真实物理时长 = freq_reso * time_reso * tdownsamp (即 1:1 切片逻辑)
+    # 图片时间轴长度 = w (通常为 512)
+    # 所以：每个像素代表的时间 = (freq_reso * time_reso * tdownsamp) / w
+    pixel_dt = (freq_reso * time_reso * tdownsamp) / w
+    peak_time_in_chunk = np.argmax(profile) * pixel_dt
+    
+    # 绝对到达时间 = 块起始偏移量 + 块内峰值时间
+    peak_time = offset + peak_time_in_chunk
+
     # all_time 计算可能是遗留代码，但 peak_time 是相对于 tstart (第一个文件) 的秒数
     # 因此 Burst MJD = tstart + peak_time / 86400
     burst_mjd = tstart + peak_time / 86400.0
@@ -103,13 +115,21 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     plt.xlim(0, w)
     plt.xticks([])
     plt.yticks([])
-    f = np.ceil(freq_reso/512)
-    f = freq_reso/f
+    
     plt.subplot(gs[1:, 0])
     plt.imshow(data.T, origin='lower', cmap='mako', aspect='auto')
     plt.scatter(np.argmax(profile), 0, color='red', s=100, marker='x')
-    plt.yticks(np.linspace(0, f, 6), np.int64(np.linspace(freq.min(), freq.max(), 6)))
-    plt.xticks(np.linspace(0, w, 6), np.round(offset + np.arange(6)/5 * time_reso * tdownsamp * 512, 2))
+    
+    # Y轴: 根据图像高度(h)设置刻度位置，标签显示频率(MHz)
+    # 之前代码中 f 计算逻辑有误，导致在非整倍数降采样时刻度位置错乱或未铺满
+    plt.yticks(np.linspace(0, h, 6), np.linspace(freq.min(), freq.max(), 6).astype(int))
+    
+    # X轴: 根据图像宽度(w)设置刻度位置，标签显示时间(s)
+    # 修正逻辑：由于我们在 main 中强制 1:1 切分 (block_len = freq_reso)，
+    # 图片代表的总物理时间为 freq_reso * time_reso * tdownsamp，与最终 resize 后的宽度 w 无关。
+    duration = freq_reso * time_reso * tdownsamp
+    plt.xticks(np.linspace(0, w, 6), np.round(offset + np.linspace(0, duration, 6), 2))
+    
     plt.xlabel('Time (s)')
     plt.ylabel('Frequency (MHz)')
     # 更新文件名格式，包含 MJD
