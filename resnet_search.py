@@ -209,8 +209,8 @@ if __name__ == "__main__":
     # 降采样前每次读取的原始样本数
     # 由时间采样点数决定
     nominal_chunk = 1536 * 512
-    # 调整 chunk_size 为 (freq * tdownsamp) 的倍数以确保整除
-    unit = freq * tdownsamp
+    # 调整 chunk_size 为 (freq_reso * tdownsamp) 的倍数以确保整除
+    unit = freq_reso * tdownsamp
     chunk_size = max(unit, int(round(nominal_chunk / unit) * unit))
 
     if file_len <= chunk_size:
@@ -218,7 +218,7 @@ if __name__ == "__main__":
         total_chunk = len(file_list) 
         ds_chunk = file_len // tdownsamp
     else:
-        print(f'Processing data by chunk size:{chunk_size//512}x512 (adjusted for freq={freq}).')
+        print(f'Processing data by chunk size:{chunk_size//512}x512 (adjusted for freq={freq_reso}).')
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
         ds_chunk = chunk_size // tdownsamp
     # 创建预加载数据队列
