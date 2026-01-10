@@ -134,7 +134,7 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     plt.ylabel('Frequency (MHz)')
     # 更新文件名格式，包含 MJD
     # 增加跨平台文件命名安全性处理：替换 Windows/Linux 非法字符为连字符
-    raw_name = f'{base_name}_MJD{burst_mjd:.6f}_{peak_time:.4f}s'
+    raw_name = f'{base_name}_MJD{burst_mjd:.9f}_{peak_time:.4f}s'
     safe_name = re.sub(r'[<>:"/\\|?*]', '-', raw_name)
     output_basename = os.path.join(output_dir, safe_name)
     plt.savefig(f'{output_basename}.jpg', format='jpg', dpi=300, bbox_inches='tight')
