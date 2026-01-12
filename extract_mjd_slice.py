@@ -208,17 +208,11 @@ def extract_slice_512(
     new_data = dedisperse(data_ds, ds_dds, block_len_ds, use_numba=True)
 
     # Resize to (512,512) via adaptive_avg_pool2d (mean pooling)
-    try:
-        import torch
-        import torch.nn.functional as F
+    import torch
+    import torch.nn.functional as F
 
-        t = torch.from_numpy(new_data).to(torch.float32).unsqueeze(0).unsqueeze(0)
-        img_512 = F.adaptive_avg_pool2d(t, (512, 512)).squeeze().cpu().numpy().astype(np.float32)
-    except Exception as e:
-        raise RuntimeError(
-            "Failed to run torch adaptive_avg_pool2d (required to match model sampling). "
-            f"Original error: {e}"
-        )
+    t = torch.from_numpy(new_data).to(torch.float32).unsqueeze(0).unsqueeze(0)
+    img_512 = F.adaptive_avg_pool2d(t, (512, 512)).squeeze().cpu().numpy().astype(np.float32)
 
     # Apply mask if provided (map raw channel indices -> 512 columns)
     mask_block_indices = None
@@ -235,6 +229,58 @@ def extract_slice_512(
     img_512 = preprocess_data(img_512, exp_cut=exp_cut).astype(np.float32)
 
     return img_512
+
+
+def _save_resnet_search_style_jpg(data_512, file_name, start_mjd, file_info, tdownsamp, out_jpg):
+    """Save JPEG using the same plotting logic as resnet_search.py -> DataProc.utils.plot_burst.
+
+    This produces a 2-panel figure:
+    - top: time profile with peak marker
+    - bottom: dynamic spectrum with mako colormap, axis ticks in seconds / MHz
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib import gridspec
+
+    plt.style.use("default")
+
+    time_reso, freq_reso, tstart, _, freq = file_info
+    data = np.asarray(data_512)
+    w, h = data.shape
+
+    profile = np.mean(data, axis=1)
+    peak_idx = int(np.argmax(profile))
+
+    pixel_dt = (freq_reso * time_reso * tdownsamp) / w
+    dpeak_time = peak_idx * pixel_dt
+    offset = (start_mjd - tstart) * 86400.0
+    peak_time = offset + dpeak_time
+
+    fig = plt.figure(figsize=(5, 5))
+    gs = gridspec.GridSpec(4, 1)
+    plt.subplots_adjust(wspace=0, hspace=0)
+
+    plt.subplot(gs[0, 0])
+    plt.plot(profile, color="royalblue", alpha=0.8, lw=1)
+    plt.scatter(peak_idx, float(np.max(profile)), color="red", s=100, marker="x")
+    plt.xlim(0, w)
+    plt.xticks([])
+    plt.yticks([])
+
+    plt.subplot(gs[1:, 0])
+    plt.imshow(data.T, origin="lower", cmap="mako", aspect="auto")
+    plt.scatter(peak_idx, 0, color="red", s=100, marker="x")
+    plt.yticks(np.linspace(0, h, 6), np.linspace(freq.min(), freq.max(), 6).astype(int))
+
+    duration = freq_reso * time_reso * tdownsamp
+    plt.xticks(np.linspace(0, w, 6), np.round(offset + np.linspace(0, duration, 6), 2))
+    plt.xlabel("Time (s)")
+    plt.ylabel("Frequency (MHz)")
+
+    plt.savefig(out_jpg, format="jpg", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 def get_args():
@@ -268,11 +314,24 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
+    # Determine effective tdownsamp (match resnet_search.py heuristic)
+    loader0 = DataLoader(file_list[0])
+    file_info = loader0.get_params()
+    time_reso, freq_reso, tstart, _file_len, _freq = file_info
+    if args.tdownsamp > 0:
+        tdownsamp_eff = int(args.tdownsamp)
+    else:
+        tdownsamp_eff = int(_auto_tdownsamp(time_reso))
+
+    # For plotting (resnet_search.py uses block duration = freq_reso * time_reso * tdownsamp)
+    duration_sec = freq_reso * time_reso * tdownsamp_eff
+    start_mjd = args.mjd - (duration_sec / 2.0) / 86400.0
+
     img = extract_slice_512(
         file_list=file_list,
         center_mjd=args.mjd,
         dm=args.dm,
-        tdownsamp=args.tdownsamp,
+        tdownsamp=tdownsamp_eff,
         mask_file=args.mask,
         exp_cut=args.exp_cut,
     )
@@ -282,31 +341,17 @@ def main():
     out_jpg = os.path.join(args.output, base + ".jpg")
     np.save(out_npy, img)
 
-    img_u8 = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
-    saved_jpg = False
-    try:
-        from PIL import Image
-
-        Image.fromarray(img_u8, mode="L").save(out_jpg, format="JPEG")
-        saved_jpg = True
-    except Exception:
-        try:
-            import matplotlib
-
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            plt.imsave(out_jpg, img_u8, cmap="gray", vmin=0, vmax=255, format="jpg")
-            saved_jpg = True
-        except Exception as e:
-            raise RuntimeError(
-                "Failed to save .jpg output. Install Pillow (PIL) or matplotlib. "
-                f"Original error: {e}"
-            )
+    _save_resnet_search_style_jpg(
+        data_512=img,
+        file_name=file_list[0],
+        start_mjd=start_mjd,
+        file_info=file_info,
+        tdownsamp=tdownsamp_eff,
+        out_jpg=out_jpg,
+    )
 
     print(f"Saved: {out_npy}")
-    if saved_jpg:
-        print(f"Saved: {out_jpg}")
+    print(f"Saved: {out_jpg}")
 
 
 if __name__ == "__main__":
