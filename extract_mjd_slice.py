@@ -244,7 +244,10 @@ def _save_resnet_search_style_jpg(data_512, file_name, start_mjd, file_info, tdo
     import matplotlib.pyplot as plt
     from matplotlib import gridspec
 
+    import seaborn as sns
+
     plt.style.use("default")
+    sns.set_color_codes()
 
     time_reso, freq_reso, tstart, _, freq = file_info
     data = np.asarray(data_512)
