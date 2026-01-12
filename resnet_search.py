@@ -129,13 +129,9 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
             chunk_cut = new_data[start:end, :]
             offsets_list.append(start)
         else:
-            # 这种情况在 loader 进行循环补齐后不应经常发生，但如果发生了：
-            if start < n_time:
-                 # 从后往前重叠截取
-                 start_back = n_time - block_len
-                 if start_back >= 0:
-                     chunk_cut = new_data[start_back:n_time, :]
-                     offsets_list.append(start_back)
+            # 要求 DataProc / ds_chunk 配置保证 n_time 可被 block_len 整除；
+            # 这里不再兜底回退截取，以免引入重复块和时间语义混乱。
+            break
         
         if chunk_cut is not None:
             # 使用 adaptive_avg_pool2d 进行调整大小以实现 "均值平滑"
@@ -216,7 +212,12 @@ if __name__ == "__main__":
     if file_len <= chunk_size:
         chunk_size = -1
         total_chunk = len(file_list) 
-        ds_chunk = file_len // tdownsamp
+        # File-mode: ensure dedisperse output length is divisible by freq_reso (1:1 block_len).
+        ds_chunk_raw = int(file_len // tdownsamp)
+        ds_chunk = int((ds_chunk_raw // freq_reso) * freq_reso)
+        if ds_chunk <= 0:
+            # Extremely short files: fall back to one block.
+            ds_chunk = int(freq_reso)
     else:
         print(f'Processing data by chunk size:{chunk_size//512}x512 (adjusted for freq={freq_reso}).')
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
@@ -289,7 +290,10 @@ if __name__ == "__main__":
             chunk_str = f", chunk idx {chunk_idx}"
             chunk_idx += 1
         else:
-            offset = 0
+            # Use global-time offset (seconds since first file start) for consistent timing across files.
+            dl = DataLoader(file_name)
+            _dt_i, _nchan_i, tstart_i, _file_len_i, _freq_i = dl.get_params()
+            offset = (tstart_i - file_info[2]) * 86400.0
             progress_str = f"{file_idx+1}/{total_chunk}"
             chunk_str = ""
             file_idx += 1

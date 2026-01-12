@@ -99,14 +99,14 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     # 图片时间轴长度 = w (通常为 512)
     # 所以：每个像素代表的时间 = (freq_reso * time_reso * tdownsamp) / w
     pixel_dt = (freq_reso * time_reso * tdownsamp) / w
-    peak_time_in_chunk = np.argmax(profile) * pixel_dt
+    dpeak_time = np.argmax(profile) * pixel_dt
     
     # 绝对到达时间 = 块起始偏移量 + 块内峰值时间
-    peak_time = offset + peak_time_in_chunk
+    peak_time = offset + dpeak_time
 
-    # all_time 计算可能是遗留代码，但 peak_time 是相对于 tstart (第一个文件) 的秒数
-    # 因此 Burst MJD = tstart + peak_time / 86400
-    burst_mjd = tstart + peak_time / 86400.0
+    # block Start MJD
+    start_mjd = tstart + offset / 86400.0
+    burst_mjd = start_mjd + dpeak_time / 86400.0
     
     plt.subplots_adjust(wspace=0, hspace=0)
     plt.subplot(gs[0, 0])
@@ -134,7 +134,7 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     plt.ylabel('Frequency (MHz)')
     # 更新文件名格式，包含 MJD
     # 增加跨平台文件命名安全性处理：替换 Windows/Linux 非法字符为连字符
-    raw_name = f'{base_name}_MJD{burst_mjd:.9f}_{peak_time:.4f}s'
+    raw_name = f'{base_name}_S{start_mjd:.9f}_MJD{burst_mjd:.9f}_{peak_time:.4f}s'
     safe_name = re.sub(r'[<>:"/\\|?*]', '-', raw_name)
     output_basename = os.path.join(output_dir, safe_name)
     plt.savefig(f'{output_basename}.jpg', format='jpg', dpi=300, bbox_inches='tight')

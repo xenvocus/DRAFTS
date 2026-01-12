@@ -6,6 +6,26 @@ from collections import deque
 from sigpyproc.readers import FilReader
 
 
+def _robust_mean_std(x):
+    """Return (mean, std) for Gaussian padding; fall back safely if x is empty/degenerate."""
+    if x is None or getattr(x, "size", 0) == 0:
+        return 0.0, 1.0
+    mean = float(np.nanmean(x))
+    std = float(np.nanstd(x))
+    if not np.isfinite(mean):
+        mean = 0.0
+    if not np.isfinite(std) or std <= 0:
+        std = 1.0
+    return mean, std
+
+
+def _gaussian_pad(shape, ref, rng, dtype):
+    """Generate Gaussian noise padding with stats estimated from ref."""
+    mean, std = _robust_mean_std(ref)
+    pad = rng.normal(loc=mean, scale=std, size=shape)
+    return pad.astype(dtype, copy=False)
+
+
 class DataLoader:
     def __init__(self, filename, telescope='Fake', backend='Fake'):
         self.filename = filename
@@ -172,6 +192,7 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
         tuple: (当前文件索引, 待处理数据块)
     """
     buffer = deque()
+    rng = np.random.default_rng()
 
     file_idx = start_file_idx
     pointer = 0
@@ -227,15 +248,14 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
             break
 
         raw_data = np.vstack(raw_parts)
-        # 如果到达列表末尾仍不足 target_raw，则末尾补零 (循环填充 Wrap padding)
+        # 如果到达列表末尾仍不足 target_raw：用高斯噪声补齐（均值/方差来自已有数据），避免复制真实信号造成重复谱。
         if remaining > 0:
-            if raw_data.shape[0] > 0:
-                pad_source = raw_data
-                while pad_source.shape[0] < remaining:
-                    pad_source = np.vstack([pad_source, pad_source])
-                pad = pad_source[:remaining]
-            else:
-                 pad = np.zeros((remaining, raw_data.shape[1], raw_data.shape[2]), dtype=raw_data.dtype)
+            pad = _gaussian_pad(
+                shape=(remaining, raw_data.shape[1], raw_data.shape[2]),
+                ref=raw_data,
+                rng=rng,
+                dtype=raw_data.dtype,
+            )
             raw_data = np.vstack([raw_data, pad])
             # 更新到列表尾部状态
             file_idx = len(file_list)  # 触发后续结束
@@ -270,15 +290,12 @@ def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_
         out_buffer = np.array(list(itertools.islice(buffer, 0, len(buffer))))
         if len(buffer) < final_len:
             pad_width = final_len - len(buffer)
-            # 从缓冲区本身进行循环填充 (Wrap padding)
-            buffer_arr = np.array(list(itertools.islice(buffer, 0, len(buffer))))
-            if buffer_arr.shape[0] > 0:
-                 pad_source = buffer_arr
-                 while pad_source.shape[0] < pad_width:
-                     pad_source = np.vstack([pad_source, pad_source])
-                 padding = pad_source[:pad_width]
-            else:
-                 padding = np.zeros((pad_width, out_buffer.shape[1]), dtype=out_buffer.dtype)
+            padding = _gaussian_pad(
+                shape=(pad_width, out_buffer.shape[1]),
+                ref=out_buffer,
+                rng=rng,
+                dtype=out_buffer.dtype,
+            )
             out_buffer = np.vstack([out_buffer, padding])
         yield len(file_list) - 1, out_buffer
 
@@ -287,6 +304,7 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
     """
     逐个文件加载和处理数据的生成器，处理与下一个文件的拼接以进行消色散重叠。
     """
+    rng = np.random.default_rng()
     current_data = DataLoader(file_list[0]).load()
     for i in range(len(file_list)):
         # 完整加载当前文件
@@ -295,35 +313,47 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
             next_loader = DataLoader(file_list[i+1])
             # 假设下一个文件足够长，TODO: 处理不够长的情况
             next_data = next_loader.load()
-            # 若下一个文件不足 dds_size，则在 overlap 尾部补零/循环
+            # 若下一个文件不足 dds_size，则在 overlap 尾部用高斯噪声补齐（尽量少引入“信号结构”）
             if next_data.shape[0] >= dds_size:
                 overlap = next_data[:dds_size]
             else:
                 pad_len = dds_size - next_data.shape[0]
-                # 循环填充 Wrap padding
                 if next_data.shape[0] > 0:
-                     pad_source = next_data
-                     while pad_source.shape[0] < pad_len:
-                         pad_source = np.vstack([pad_source, pad_source])
-                     pad = pad_source[:pad_len]
-                     overlap = np.vstack([next_data, pad])
+                    pad = _gaussian_pad(
+                        shape=(pad_len, next_data.shape[1], next_data.shape[2]),
+                        ref=next_data,
+                        rng=rng,
+                        dtype=next_data.dtype,
+                    )
+                    overlap = np.vstack([next_data, pad])
                 else:
-                    overlap = np.zeros((dds_size, next_data.shape[1], next_data.shape[2]), dtype=next_data.dtype)
+                    # 兜底：若 next_data 为空，用 current_data 的统计特征生成噪声
+                    overlap = _gaussian_pad(
+                        shape=(dds_size, current_data.shape[1], current_data.shape[2]),
+                        ref=current_data,
+                        rng=rng,
+                        dtype=current_data.dtype,
+                    )
                 
             combined_data = np.vstack([current_data, overlap])
             current_data = next_data
         else:
-            # 对于最后一个文件，用零填充/循环包裹以保持一致的大小
-            # Wrap padding: 将 current_data 开头包裹到结尾
-            padshape = ((0, dds_size), (0, 0), (0, 0)) # 默认后备
+            # 对于最后一个文件：只补 dedisperse 需要的 overlap，并用高斯噪声（统计来自 current_data）
             if current_data.shape[0] > 0:
-                 pad_source = current_data
-                 while pad_source.shape[0] < dds_size:
-                     pad_source = np.vstack([pad_source, pad_source])
-                 pad = pad_source[:dds_size]
-                 combined_data = np.vstack([current_data, pad])
+                pad = _gaussian_pad(
+                    shape=(dds_size, current_data.shape[1], current_data.shape[2]),
+                    ref=current_data,
+                    rng=rng,
+                    dtype=current_data.dtype,
+                )
+                combined_data = np.vstack([current_data, pad])
             else:
-                 combined_data = np.pad(current_data, padshape, mode='constant', constant_values=0)
+                combined_data = _gaussian_pad(
+                    shape=(dds_size, current_data.shape[1], current_data.shape[2]),
+                    ref=current_data,
+                    rng=rng,
+                    dtype=current_data.dtype,
+                )
 
         # 保证长度足以覆盖 ds_chunk + ds_dds（原始采样域）
         ds_dds = dds_size // tdownsamp
@@ -331,14 +361,20 @@ def file_generator(file_list, dds_size, tdownsamp, freq_reso, ds_chunk):
         if combined_data.shape[0] < target_raw:
             pad_len = target_raw - combined_data.shape[0]
             if combined_data.shape[0] > 0:
-                 pad_source = combined_data
-                 while pad_source.shape[0] < pad_len:
-                     pad_source = np.vstack([pad_source, pad_source])
-                 pad = pad_source[:pad_len]
-                 combined_data = np.vstack([combined_data, pad])
+                pad = _gaussian_pad(
+                    shape=(pad_len, combined_data.shape[1], combined_data.shape[2]),
+                    ref=combined_data,
+                    rng=rng,
+                    dtype=combined_data.dtype,
+                )
+                combined_data = np.vstack([combined_data, pad])
             else:
-                 padshape = ((0, pad_len), (0, 0), (0, 0))
-                 combined_data = np.pad(combined_data, padshape, mode='constant', constant_values=0)
+                combined_data = _gaussian_pad(
+                    shape=(pad_len, combined_data.shape[1], combined_data.shape[2]),
+                    ref=combined_data,
+                    rng=rng,
+                    dtype=combined_data.dtype,
+                )
 
         # 降采样 Downsample
         ds_len = combined_data.shape[0] // tdownsamp
