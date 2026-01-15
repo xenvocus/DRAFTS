@@ -160,6 +160,26 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
         data_blocks[j, :, :] = np.clip(data_blocks[j, :, :], None, cap)
         data_blocks[j, :, :] = preprocess_data(data_blocks[j, :, :])
 
+    # 随机抽取 3 个 block 输出统计并保存示意图
+    if data_blocks.shape[0] > 0:
+        sample_count = min(3, data_blocks.shape[0])
+        sample_indices = np.random.choice(data_blocks.shape[0], sample_count, replace=False)
+        plt.figure(figsize=(4 * sample_count, 4))
+        for i, bi in enumerate(sample_indices, start=1):
+            blk = data_blocks[bi]
+            mean_val = float(np.mean(blk))
+            std_val = float(np.std(blk))
+            min_val = float(np.min(blk))
+            max_val = float(np.max(blk))
+            print(f"[Sample block {bi}] mean={mean_val:.4f}, std={std_val:.4f}, min={min_val:.4f}, max={max_val:.4f}")
+            plt.subplot(1, sample_count, i)
+            plt.imshow(blk, cmap='viridis', aspect='auto')
+            plt.title(f"idx {bi}\nμ={mean_val:.3f} σ={std_val:.3f}\nmin={min_val:.3f} max={max_val:.3f}")
+            plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f'test{i}.jpg'), dpi=200, bbox_inches='tight')
+        plt.close()
+
     blocks = predict(model_session, data_blocks, prob)
     load = DataLoader(file_name)
     load.load_header()
