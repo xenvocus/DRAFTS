@@ -82,9 +82,31 @@ def model_load(base_model, device):
     return model
 
 
+def clean_block(data, threshold=3.0):
+    """
+    Apply robust Z-score masking to frequency channels within a block.
+    data: (time, freq)
+    """
+    # 1. Compute Spectrum (mean over time)
+    spectrum = np.mean(data, axis=0)
+    
+    # 2. Robust Stats
+    median = np.median(spectrum)
+    mad = np.median(np.abs(spectrum - median))
+    sigma = 1.4826 * mad
+    
+    # 3. Mask
+    if sigma > 1e-6:
+        mask = np.abs(spectrum - median) > threshold * sigma
+        if np.any(mask):
+            data[:, mask] = median
+            
+    return data
+
+
 def main(file_name, data, offset_base, file_info, model_session, prob,
                        ds_dds, ds_chunk, tdownsamp, plot_executor, save_path,
-                       time_reso, mask_block_idc=None):
+                       time_reso, mask_block_idc=None, enable_dynamic_mask=False):
     """通用数据处理、预测和绘图提交例程。
 
     输入 Inputs:
@@ -151,8 +173,29 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     if mask_block_idc is not None and len(mask_block_idc) > 0:
         data_blocks[:, :, mask_block_idc] = np.mean(data_blocks)
 
+    # 抽样检查 Mask 效果的标志
+    check_plotted = False
+
     # 对每个块进行预处理
     for j in range(data_blocks.shape[0]):
+        if enable_dynamic_mask:
+            data_blocks[j, :, :] = clean_block(data_blocks[j, :, :])
+            # 随机抽一张保存展示效果 (每个文件最多一张，概率 10% 以防错过短文件)
+            if not check_plotted and np.random.rand() < 0.1:
+                try:
+                    plt.figure(figsize=(8, 8))
+                    plt.imshow(data_blocks[j, :, :], aspect='auto', origin='lower', cmap='viridis')
+                    plt.title(f"Dynamic Mask Check\nFile: {os.path.basename(file_name)}\nBlock: {j}")
+                    plt.colorbar()
+                    check_fname = f"mask_check_{os.path.basename(file_name).replace('.fits', '')}_blk{j}.jpg"
+                    check_path = os.path.join(save_path, check_fname)
+                    plt.savefig(check_path)
+                    plt.close()
+                    print(f"Saved mask check image: {check_path}")
+                    check_plotted = True
+                except Exception as e:
+                    print(f"Failed to plot mask check: {e}")
+
         data_blocks[j, :, :] = preprocess_data(data_blocks[j, :, :])
 
     blocks = predict(model_session, data_blocks, prob)
@@ -226,17 +269,23 @@ if __name__ == "__main__":
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
     
     global_mask_idc = None
+    use_dynamic_mask = False
+    
     if args.mask:
-        mask_chans = load_mask(args.mask)
-        if mask_chans is not None:
-             # Map raw channel idc to block column idc (512 columns)
-             # Block column j corresponds to raw channels [j*factor, (j+1)*factor)
-             # factor = freq_reso / 512
-             factor = freq_reso / 512.0
-             global_mask_idc = np.unique((mask_chans / factor).astype(int))
-             # Ensure idc are within [0, 512)
-             global_mask_idc = global_mask_idc[(global_mask_idc >= 0) & (global_mask_idc < 512)]
-             print(f"Global Mask loaded: {len(mask_chans)} channels mapped to {len(global_mask_idc)} block columns.")
+        if args.mask.lower() == 'auto':
+            use_dynamic_mask = True
+            print("Dynamic Block-level RFI Masking ENABLED.")
+        else:
+            mask_chans = load_mask(args.mask)
+            if mask_chans is not None:
+                # Map raw channel idc to block column idc (512 columns)
+                # Block column j corresponds to raw channels [j*factor, (j+1)*factor)
+                # factor = freq_reso / 512
+                factor = freq_reso / 512.0
+                global_mask_idc = np.unique((mask_chans / factor).astype(int))
+                # Ensure idc are within [0, 512)
+                global_mask_idc = global_mask_idc[(global_mask_idc >= 0) & (global_mask_idc < 512)]
+                print(f"Global Mask loaded: {len(mask_chans)} channels mapped to {len(global_mask_idc)} block columns.")
 
     preload_process = mp.Process(target=preload_worker, args=(
     file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, preload_queue))
@@ -266,22 +315,23 @@ if __name__ == "__main__":
             if file_idx != current_file_idx:
                 current_file_idx = file_idx
                 # Look for specific mask
-                mask_path = file_name.replace('.fits', '.mask')
-                if not os.path.exists(mask_path):
-                     # Try alternative naming or location if needed
-                     pass
-                
-                if os.path.exists(mask_path):
-                    m_chans = load_mask(mask_path)
-                    if m_chans is not None:
-                        factor = freq_reso / 512.0
-                        m_blks = np.unique((m_chans / factor).astype(int))
-                        current_mask_idc = m_blks[(m_blks >= 0) & (m_blks < 512)]
-                        print(f"Loaded mask for {basename}: {len(current_mask_idc)} masked blocks")
+                if not use_dynamic_mask:
+                    mask_path = file_name.replace('.fits', '.mask')
+                    if not os.path.exists(mask_path):
+                        # Try alternative naming or location if needed
+                        pass
+                    
+                    if os.path.exists(mask_path):
+                        m_chans = load_mask(mask_path)
+                        if m_chans is not None:
+                            factor = freq_reso / 512.0
+                            m_blks = np.unique((m_chans / factor).astype(int))
+                            current_mask_idc = m_blks[(m_blks >= 0) & (m_blks < 512)]
+                            print(f"Loaded mask for {basename}: {len(current_mask_idc)} masked blocks")
+                        else:
+                            current_mask_idc = None
                     else:
                         current_mask_idc = None
-                else:
-                    current_mask_idc = None
             mask_block_idc = current_mask_idc
 
         if chunk_size > 0:
@@ -300,7 +350,8 @@ if __name__ == "__main__":
         print(f"{progress_str}, file: {basename}")
         n_found = main(file_name, data, offset, file_info, model,
                                     prob, ds_dds, ds_chunk, tdownsamp,
-                                    plot_executor, save_path, block_size, time_reso, mask_block_idc)
+                                    plot_executor, save_path, block_size, time_reso, 
+                                    mask_block_idc, enable_dynamic_mask=use_dynamic_mask)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
     plot_executor.shutdown(wait=True)
