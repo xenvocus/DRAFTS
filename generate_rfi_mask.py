@@ -43,12 +43,34 @@ def spectral_kurtosis_from_sums(s1: np.ndarray, s2: np.ndarray, m: int) -> np.nd
     sk = np.full_like(s1, np.nan, dtype=np.float64)
     if m < 2:
         return sk
-    good = (s1 > 0) & np.isfinite(s1) & np.isfinite(s2)
+    # Ensure S1^2 is not zero and S1, S2 are valid
+    good = (s1 > 1e-9) & np.isfinite(s1) & np.isfinite(s2)
     s1g = s1[good].astype(np.float64, copy=False)
     s2g = s2[good].astype(np.float64, copy=False)
+    
+    # Check for potential underflow/division by zero in S1^2
+    denom = s1g * s1g
+    valid_denom = denom > 1e-18
+    
+    if not np.any(valid_denom):
+        return sk
+
+    # Filter strictly valid denominator
+    s1g = s1g[valid_denom]
+    s2g = s2g[valid_denom]
+    
+    # Use indices to update 'good'
+    # Actually simpler to just calculate for all 'good' where denom is safe.
+    # But for simplicity, let's trust s1 > 1e-9 implies s1^2 > 1e-18.
+    
     sk_val = ((m + 1.0) / (m - 1.0)) * ((m * s2g) / (s1g * s1g) - 1.0)
+    
+    # Map back to full array
+    # We need to be careful with indices if we filtered twice.
+    # Let's just use the first 'good' mask which ensures s1 > 1e-9.
     sk[good] = sk_val
     return sk
+
 
 def process_file(filepath, output_dir, sigma_thresh=10.0):
     try:
@@ -69,13 +91,9 @@ def process_file(filepath, output_dir, sigma_thresh=10.0):
             
         h = fitsio.read_header(filepath, ext=data_ext)
         nchan = h['NCHAN']
-        try:
-            nsblk = h['NSBLK']
-            naxis2 = h['NAXIS2']
-            total_rows = naxis2
-        except:
-            # Maybe filterbank style or different fits
-            return
+        nsblk = h['NSBLK']
+        npol = h.get('NPOL', 1)
+        total_rows = h['NAXIS2']
 
         # Spectral Kurtosis (SK): stream through rows and only accumulate S1 and S2.
         # This avoids large temporary arrays from **3/**4 on the full matrix.
@@ -93,8 +111,27 @@ def process_file(filepath, output_dir, sigma_thresh=10.0):
                 if start_row >= end_row:
                     break
 
+                # Read block. Shape is typically (n_rows, nsblk, npol, nchan)
+                # fitsio might squeeze dimensions if they are 1.
+                # To be safe, we use reshape based on header info.
                 block = ff[data_ext].read(rows=range(start_row, end_row), columns=['DATA'])['DATA']
-                tf = _read_data_as_time_freq(block)  # (time, nchan) float32
+                
+                # Expected number of elements
+                current_rows = end_row - start_row
+                expected_size = current_rows * nsblk * npol * nchan
+                if block.size != expected_size:
+                    print(f"Warning: Block size mismatch in {filepath}. Expected {expected_size}, got {block.size}. Skipping chunk.")
+                    continue
+
+                # Reshape to (Time_in_chunk, Pol, Chan)
+                # Time_in_chunk = current_rows * nsblk
+                flat = block.reshape(current_rows * nsblk, npol, nchan)
+                
+                # Convert to Float32 and Sum Pols -> (Time, Chan)
+                if npol > 1:
+                    tf = flat.sum(axis=1, dtype=np.float32)
+                else:
+                    tf = flat.reshape(current_rows * nsblk, nchan).astype(np.float32)
 
                 # S1
                 s1 += tf.sum(axis=0, dtype=np.float64)
