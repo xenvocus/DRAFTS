@@ -83,7 +83,7 @@ def model_load(base_model, device):
     return model
 
 
-def clean_block(data, threshold=3.0):
+def clean_block(data, threshold=3.0, return_mask=False):
     """
     Apply robust Z-score masking to frequency channels within a block.
     data: (time, freq)
@@ -96,12 +96,17 @@ def clean_block(data, threshold=3.0):
     mad = np.median(np.abs(spectrum - median))
     sigma = 1.4826 * mad
     
+    mask_indices = None
+    
     # 3. Mask
     if sigma > 1e-6:
         mask = np.abs(spectrum - median) > threshold * sigma
         if np.any(mask):
             data[:, mask] = median
-            
+            mask_indices = np.where(mask)[0]
+    
+    if return_mask:
+        return data, mask_indices        
     return data
 
 
@@ -180,7 +185,7 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     # 对每个块进行预处理
     for j in range(data_blocks.shape[0]):
         if enable_dynamic_mask:
-            data_blocks[j, :, :] = clean_block(data_blocks[j, :, :])
+            data_blocks[j, :, :], mask_idc = clean_block(data_blocks[j, :, :], return_mask=True)
             # 随机抽一张保存展示效果 (每个文件最多一张，概率 10% 以防错过短文件)
             if not check_plotted and np.random.rand() < 0.1:
                 try:
@@ -190,6 +195,11 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
                     plt.title(f"Dynamic Mask Check\nFile: {os.path.basename(file_name)}\nBlock: {j}")
                     plt.colorbar()
                     
+                    # 用红线明确标明 mask 掉的 channel (Y 轴)
+                    if mask_idc is not None:
+                        for midx in mask_idc:
+                             plt.axhline(y=midx, color='red', linewidth=0.8, alpha=0.7)
+
                     raw_name = f"mask_check_{os.path.basename(file_name).replace('.fits', '')}_blk{j}"
                     safe_name = re.sub(r'[<>:"/\\|?*]', '-', raw_name)
                     check_path = os.path.join(save_path, f"{safe_name}.jpg")
