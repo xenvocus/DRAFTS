@@ -84,7 +84,7 @@ def model_load(base_model, device):
 
 def main(file_name, data, offset_base, file_info, model_session, prob,
                        ds_dds, ds_chunk, tdownsamp, plot_executor, save_path,
-                       block_size, time_reso, mask_block_indices=None):
+                       time_reso, mask_block_idc=None):
     """通用数据处理、预测和绘图提交例程。
 
     输入 Inputs:
@@ -96,7 +96,7 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     - prob: 候选块的概率阈值
     - ds_dds, ds_chunk, tdownsamp: 消色散/降采样参数
     - plot_executor: 提交绘图作业的执行器
-    - save_path, block_size, time_reso: 用于绘图的其他全局变量
+    - save_path, time_reso: 用于绘图的其他全局变量
 
     返回检测到的块数量。
     """
@@ -113,9 +113,9 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     
     # 由于 Dataloader 现在处理补齐，如果 chunk_size 配置正确，n_time 理想情况下应该是 block_len 的倍数。
     # 但是，为了安全起见，我们仍然处理残余部分。
-    indices = list(range(0, n_time, block_len))
+    idc = list(range(0, n_time, block_len))
     
-    for idx in indices:
+    for idx in idc:
         start = idx
         end = idx + block_len
         
@@ -147,9 +147,9 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
 
     data_blocks = np.array(blocks_list)
     
-    # 应用掩膜（若存在）(将掩膜块列设置为 0)
-    if mask_block_indices is not None and len(mask_block_indices) > 0:
-        data_blocks[:, :, mask_block_indices] = 0
+    # 应用掩膜（若存在）
+    if mask_block_idc is not None and len(mask_block_idc) > 0:
+        data_blocks[:, :, mask_block_idc] = np.mean(data_blocks)
 
     # 对每个块进行预处理
     for j in range(data_blocks.shape[0]):
@@ -225,18 +225,18 @@ if __name__ == "__main__":
     # 创建预加载数据队列
     preload_queue = mp.Queue(maxsize=min(4, total_chunk//2))
     
-    global_mask_indices = None
+    global_mask_idc = None
     if args.mask:
         mask_chans = load_mask(args.mask)
         if mask_chans is not None:
-             # Map raw channel indices to block column indices (512 columns)
+             # Map raw channel idc to block column idc (512 columns)
              # Block column j corresponds to raw channels [j*factor, (j+1)*factor)
              # factor = freq_reso / 512
              factor = freq_reso / 512.0
-             global_mask_indices = np.unique((mask_chans / factor).astype(int))
-             # Ensure indices are within [0, 512)
-             global_mask_indices = global_mask_indices[(global_mask_indices >= 0) & (global_mask_indices < 512)]
-             print(f"Global Mask loaded: {len(mask_chans)} channels mapped to {len(global_mask_indices)} block columns.")
+             global_mask_idc = np.unique((mask_chans / factor).astype(int))
+             # Ensure idc are within [0, 512)
+             global_mask_idc = global_mask_idc[(global_mask_idc >= 0) & (global_mask_idc < 512)]
+             print(f"Global Mask loaded: {len(mask_chans)} channels mapped to {len(global_mask_idc)} block columns.")
 
     preload_process = mp.Process(target=preload_worker, args=(
     file_list, chunk_size, dds_size, tdownsamp, freq_reso, ds_chunk, preload_queue))
@@ -248,7 +248,7 @@ if __name__ == "__main__":
     model = model_load(base_model, device)
     chunk_idx = 0
     current_file_idx = -1
-    current_mask_indices = None
+    current_mask_idc = None
     
     while True:
         item = data_source.get()
@@ -260,8 +260,8 @@ if __name__ == "__main__":
         basename = os.path.basename(file_name)
         
         # Determine mask
-        if global_mask_indices is not None:
-            mask_block_indices = global_mask_indices
+        if global_mask_idc is not None:
+            mask_block_idc = global_mask_idc
         else:
             if file_idx != current_file_idx:
                 current_file_idx = file_idx
@@ -276,13 +276,13 @@ if __name__ == "__main__":
                     if m_chans is not None:
                         factor = freq_reso / 512.0
                         m_blks = np.unique((m_chans / factor).astype(int))
-                        current_mask_indices = m_blks[(m_blks >= 0) & (m_blks < 512)]
-                        print(f"Loaded mask for {basename}: {len(current_mask_indices)} masked blocks")
+                        current_mask_idc = m_blks[(m_blks >= 0) & (m_blks < 512)]
+                        print(f"Loaded mask for {basename}: {len(current_mask_idc)} masked blocks")
                     else:
-                        current_mask_indices = None
+                        current_mask_idc = None
                 else:
-                    current_mask_indices = None
-            mask_block_indices = current_mask_indices
+                    current_mask_idc = None
+            mask_block_idc = current_mask_idc
 
         if chunk_size > 0:
             offset = chunk_idx * chunk_size * time_reso
@@ -300,7 +300,7 @@ if __name__ == "__main__":
         print(f"{progress_str}, file: {basename}")
         n_found = main(file_name, data, offset, file_info, model,
                                     prob, ds_dds, ds_chunk, tdownsamp,
-                                    plot_executor, save_path, block_size, time_reso, mask_block_indices)
+                                    plot_executor, save_path, block_size, time_reso, mask_block_idc)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
     plot_executor.shutdown(wait=True)
