@@ -1,4 +1,5 @@
 import os
+import re # Added for filename sanitization
 
 # 设置缓存目录到本地可写文件夹
 if 'NUMBA_CACHE_DIR' not in os.environ:
@@ -184,11 +185,15 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
             if not check_plotted and np.random.rand() < 0.1:
                 try:
                     plt.figure(figsize=(8, 8))
-                    plt.imshow(data_blocks[j, :, :], aspect='auto', origin='lower', cmap='viridis')
+                    # Transpose to show Time on X, Freq on Y (Standard Waterfall)
+                    plt.imshow(data_blocks[j, :, :].T, aspect='auto', origin='lower', cmap='viridis')
                     plt.title(f"Dynamic Mask Check\nFile: {os.path.basename(file_name)}\nBlock: {j}")
                     plt.colorbar()
-                    check_fname = f"mask_check_{os.path.basename(file_name).replace('.fits', '')}_blk{j}.jpg"
-                    check_path = os.path.join(save_path, check_fname)
+                    
+                    raw_name = f"mask_check_{os.path.basename(file_name).replace('.fits', '')}_blk{j}"
+                    safe_name = re.sub(r'[<>:"/\\|?*]', '-', raw_name)
+                    check_path = os.path.join(save_path, f"{safe_name}.jpg")
+                    
                     plt.savefig(check_path)
                     plt.close()
                     print(f"Saved mask check image: {check_path}")
