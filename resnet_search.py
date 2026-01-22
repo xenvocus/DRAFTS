@@ -85,43 +85,47 @@ def model_load(base_model, device):
 
 def clean_block(data, threshold=2.5, max_iter=2, return_mask=False):
     """
-    Apply iterative robust Z-score masking to frequency channels within a block.
+    Apply combined robust Z-score masking (Mean + Std) to frequency channels.
     data: (time, freq)
     """
-    # Work on a copy or modify in place? The caller expects modification or return.
-    # We modify 'data' in place, but for safety in iteration we should be careful.
-    
-    total_mask_indices = np.array([], dtype=int)
+    data = data.copy()
+    total_mask = np.zeros(data.shape[1], dtype=bool)
     
     for i in range(max_iter):
-        # 1. Compute Spectrum (mean over time)
-        spectrum = np.mean(data, axis=0)
+        # 1. Calculate Statistics
+        mean_prof = np.mean(data, axis=0)
+        std_prof = np.std(data, axis=0)
         
-        # 2. Robust Stats
-        median = np.median(spectrum)
-        diff = np.abs(spectrum - median)
-        mad = np.median(diff)
-        sigma = 1.4826 * mad
+        # 2. Helper for Robust Z-score
+        def get_outliers(arr, thresh):
+            med = np.median(arr)
+            diff = np.abs(arr - med)
+            mad = np.median(diff)
+            sigma = 1.4826 * mad
+            if sigma < 1e-9: return np.zeros_like(arr, dtype=bool)
+            return diff > thresh * sigma
+
+        # 3. Identify outliers in both Mean and Std
+        mask_mean = get_outliers(mean_prof, threshold)
+        mask_std = get_outliers(std_prof, threshold)
         
-        if sigma < 1e-9:
-            break
+        new_mask = mask_mean | mask_std
         
-        # 3. Mask
-        # Use a slightly lower threshold for iterations if needed, or constant
-        mask = diff > threshold * sigma
-        
-        if not np.any(mask):
+        # If no new mask found, stop
+        if not np.any(new_mask):
             break
             
-        # Apply mask: replace with median
-        data[:, mask] = median
+        # 4. Apply Mask
+        # Replace with global median (effectively neutralizing the channel)
+        global_med = np.median(data)
+        data[:, new_mask] = global_med
         
-        # Record indices
-        new_idc = np.where(mask)[0]
-        total_mask_indices = np.union1d(total_mask_indices, new_idc)
+        total_mask = total_mask | new_mask
+    
+    mask_indices = np.where(total_mask)[0]
     
     if return_mask:
-        return data, total_mask_indices
+        return data, mask_indices
     return data
 
 
