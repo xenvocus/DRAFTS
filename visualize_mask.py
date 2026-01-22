@@ -1,12 +1,13 @@
 import os
 import argparse
+import seaborn as sns
 import numpy as np
 import torch
 import torch.nn.functional as F
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
-
+sns.set_color_codes()
 # Setup environment like resnet_search.py
 if 'NUMBA_CACHE_DIR' not in os.environ:
     numba_cache_dir = os.path.join(os.getcwd(), 'numba_cache')
@@ -33,9 +34,30 @@ def process_chunk(data, file_info, tdownsamp, mask_block_idc, ds_dds, ds_chunk):
     Process a chunk of data exactly as resnet_search.py does.
     Returns processed blocks ready for plotting.
     """
+    # 0. Pre-processing: Downsample
+    # Data is raw (Time, Pol, Chan) or (Time, Chan)
+    # Ensure dimensions
+    if data.ndim == 3:
+        n_time, n_pol, n_chan = data.shape
+        # Downsample time and average pols
+        ds_len = n_time // tdownsamp
+        if ds_len == 0: return [], []
+        
+        reshaped = data[:ds_len * tdownsamp].reshape(ds_len, tdownsamp, n_pol, n_chan)
+        data_ds = np.mean(reshaped, axis=(1, 2)).astype(np.float32)
+    elif data.ndim == 2:
+        # (Time, Chan)
+        n_time, n_chan = data.shape
+        ds_len = n_time // tdownsamp
+        if ds_len == 0: return [], []
+        reshaped = data[:ds_len * tdownsamp].reshape(ds_len, tdownsamp, n_chan)
+        data_ds = np.mean(reshaped, axis=1).astype(np.float32)
+    else:
+        raise ValueError(f"Unexpected data shape: {data.shape}")
+
     # 1. Dedisperse
-    # data here is raw data loaded with padding
-    new_data = dedisperse(data, ds_dds, ds_chunk, use_numba=True)
+    # data_ds is now (Time_ds, Chan)
+    new_data = dedisperse(data_ds, ds_dds, ds_chunk, use_numba=True)
     n_time, n_freq = new_data.shape
     
     # 2. Block slicing (1:1 aspect ratio)
