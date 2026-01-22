@@ -350,7 +350,7 @@ if __name__ == "__main__":
         print(f"{progress_str}, file: {basename}")
         n_found = main(file_name, data, offset, file_info, model,
                                     prob, ds_dds, ds_chunk, tdownsamp,
-                                    plot_executor, save_path, block_size, time_reso, 
+                                    plot_executor, save_path, time_reso, 
                                     mask_block_idc, enable_dynamic_mask=use_dynamic_mask)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
