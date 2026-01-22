@@ -83,30 +83,45 @@ def model_load(base_model, device):
     return model
 
 
-def clean_block(data, threshold=3.0, return_mask=False):
+def clean_block(data, threshold=2.5, max_iter=2, return_mask=False):
     """
-    Apply robust Z-score masking to frequency channels within a block.
+    Apply iterative robust Z-score masking to frequency channels within a block.
     data: (time, freq)
     """
-    # 1. Compute Spectrum (mean over time)
-    spectrum = np.mean(data, axis=0)
+    # Work on a copy or modify in place? The caller expects modification or return.
+    # We modify 'data' in place, but for safety in iteration we should be careful.
     
-    # 2. Robust Stats
-    median = np.median(spectrum)
-    mad = np.median(np.abs(spectrum - median))
-    sigma = 1.4826 * mad
+    total_mask_indices = np.array([], dtype=int)
     
-    mask_indices = None
-    
-    # 3. Mask
-    if sigma > 1e-6:
-        mask = np.abs(spectrum - median) > threshold * sigma
-        if np.any(mask):
-            data[:, mask] = median
-            mask_indices = np.where(mask)[0]
+    for i in range(max_iter):
+        # 1. Compute Spectrum (mean over time)
+        spectrum = np.mean(data, axis=0)
+        
+        # 2. Robust Stats
+        median = np.median(spectrum)
+        diff = np.abs(spectrum - median)
+        mad = np.median(diff)
+        sigma = 1.4826 * mad
+        
+        if sigma < 1e-9:
+            break
+        
+        # 3. Mask
+        # Use a slightly lower threshold for iterations if needed, or constant
+        mask = diff > threshold * sigma
+        
+        if not np.any(mask):
+            break
+            
+        # Apply mask: replace with median
+        data[:, mask] = median
+        
+        # Record indices
+        new_idc = np.where(mask)[0]
+        total_mask_indices = np.union1d(total_mask_indices, new_idc)
     
     if return_mask:
-        return data, mask_indices        
+        return data, total_mask_indices
     return data
 
 
