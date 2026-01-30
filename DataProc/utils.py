@@ -4,6 +4,7 @@ import numpy as np
 from numba import njit, prange
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
+from matplotlib.patches import Rectangle
 def load_mask(mask_file):
     if mask_file and os.path.exists(mask_file):
         try:
@@ -83,7 +84,7 @@ def _dedisperse_numpy(data, shifts, ds_chunk):
     return out
 
 
-def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
+def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, bbox=None):
     data, file_tstart = plot_datas
     base_name = os.path.basename(os.path.splitext(filename)[0])
     fig          = plt.figure(figsize=(5, 5))
@@ -130,6 +131,14 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir):
     duration = freq_reso * time_reso * tdownsamp
     plt.xticks(np.linspace(0, w, 6), np.round(offset + np.linspace(0, duration, 6), 2))
     
+    if bbox is not None:
+        # bbox format: (x_min, x_max, y_min, y_max)
+        # x corresponds to Time (0-511), y corresponds to Freq (0-511)
+        x_min, x_max, y_min, y_max = bbox
+        rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
+                         linewidth=0.8, edgecolor='red', facecolor='none')
+        plt.gca().add_patch(rect)
+
     plt.xlabel('Time (s)')
     plt.ylabel('Frequency (MHz)')
     # 更新文件名格式，包含 MJD

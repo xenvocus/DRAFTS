@@ -8,6 +8,8 @@ if 'NUMBA_CACHE_DIR' not in os.environ:
     os.environ['NUMBA_CACHE_DIR'] = numba_cache_dir
 
 import torch
+import onnx
+import onnx.numpy_helper
 import warnings
 import argparse
 import numpy as np
@@ -75,12 +77,120 @@ def predict(model_session, data, prob=0.5):
     return blocks
 
 
-def model_load(base_model, device):
+def model_load_advanced(model_path):
+    """
+    Load ONNX model, extract FC weights, and modify model to output feature map.
+    Returns: (session, fc_weights, feature_layer_name)
+    """
+    model = onnx.load(model_path)
+    
+    # Target nodes based on inspection
+    feature_node_name = '/base_model/layer4/layer4.1/relu_1/Relu_output_0'
+    fc_weight_name = 'base_model.fc.weight'
+    
+    # Extract FC weights
+    fc_weights = None
+    for init in model.graph.initializer:
+        if init.name == fc_weight_name:
+            fc_weights = onnx.numpy_helper.to_array(init)
+            break
+            
+    if fc_weights is None:
+        print(f"Warning: Could not find FC weights {fc_weight_name} in ONNX model.")
+        # Fallback or error handling
+    
+    # Add intermediate output
+    # Check if it's already an output
+    if not any(out.name == feature_node_name for out in model.graph.output):
+        # Create ValueInfoProto for the output (we can infer type/shape or leave partially undefined)
+        # Usually minimal info is enough for runtime to fill it
+        intermediate_layer_value_info = onnx.helper.make_tensor_value_info(
+            feature_node_name,
+            onnx.TensorProto.FLOAT,
+            ['batch', 'channel', 'height', 'width'] # Symbolic dims
+        )
+        model.graph.output.append(intermediate_layer_value_info)
+        
+    # Create session from bytes
+    model_bytes = model.SerializeToString()
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    model = ort.InferenceSession(base_model, options, 
-                                    providers=['CPUExecutionProvider'])
-    return model
+    session = ort.InferenceSession(model_bytes, options, providers=['CPUExecutionProvider'])
+    
+    return session, fc_weights, feature_node_name
+
+def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio=0.5):
+    try:
+        # Prepare input
+        input_name = session.get_inputs()[0].name
+        # Input expects (Batch, Channel, H, W) -> (1, 1, 512, 512)
+        inputs = np.expand_dims(data, axis=0).astype(np.float32) # (1, 512, 512)
+        inputs = np.expand_dims(inputs, axis=0) # (1, 1, 512, 512)
+        
+        # Run session to get feature map
+        # Request only the feature map output to save time? Or both?
+        # Note: If we just run, we get all outputs.
+        outputs = session.run([feature_output_name], {input_name: inputs})
+        feature_map = outputs[0] # (1, 512, H, W) -> usually (1, 512, 16, 16) for ResNet18 input 512
+        
+        if fc_weights is None:
+            return None
+
+        # CAM calculation
+        # feature_map: (1, 512, 16, 16)
+        # fc_weights: (2, 512) -> We want class 1 (signal)
+        weight = fc_weights[1] # (512,)
+        
+        # (1, 512, H, W) * (512,) -> (1, H, W)
+        # np.einsum is convenient: 'bchw,c->bhw'
+        cam = np.einsum('bchw,c->bhw', feature_map, weight)
+        
+        # Normalize and Resize
+        # Use torch for interpolation as it's already imported and easy
+        cam_tensor = torch.from_numpy(cam).unsqueeze(1) # (1, 1, H, W)
+        cam_resized = F.interpolate(cam_tensor, size=(512, 512), mode='bilinear', align_corners=False)
+        cam_np = cam_resized.squeeze().numpy() # (512, 512)
+        
+        cam_np = cam_np - cam_np.min()
+        cam_np = cam_np / (cam_np.max() + 1e-8)
+        
+        mask = cam_np > threshold_ratio
+        
+        if not np.any(mask):
+            return None
+            
+        t_indices = np.where(np.any(mask, axis=1))[0] # Time is dim 0 (height in array)
+        f_indices = np.where(np.any(mask, axis=0))[0] # Freq is dim 1 (width in array)
+        
+        # In plot_burst: imshow(data.T)
+        # data is (Time, Freq) -> (512, 512)
+        # imshow(data.T) means X-axis is Time (dim 0 of original), Y-axis is Freq (dim 1 of original)
+        # But wait, imshow(data.T) puts dim 1 (Freq) on Y, dim 0 (Time) on X.
+        
+        # bbox format expected by plot_burst in utils.py:
+        # x_min, x_max, y_min, y_max
+        # In plot_burst:
+        # rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min)
+        # plt.imshow(data.T, ...) 
+        # data.T shape is (Freq, Time). 
+        # imshow uses (row, col) as (y, x).
+        # data.T[y, x] corresponds to data[x, y].
+        # So X-coord in plot is Time index (0..511). Y-coord in plot is Freq index (0..511).
+        
+        # t_indices are indices in dimension 0 of data (Time).
+        # f_indices are indices in dimension 1 of data (Freq).
+        
+        if len(t_indices) == 0 or len(f_indices) == 0:
+            return None
+            
+        x_min, x_max = int(t_indices[0]), int(t_indices[-1])
+        y_min, y_max = int(f_indices[0]), int(f_indices[-1])
+        
+        return (x_min, x_max, y_min, y_max)
+        
+    except Exception as e:
+        print(f"Error computing CAM: {e}")
+        return None
 
 
 def clean_block(data, threshold=2.5, max_iter=2, return_mask=False):
@@ -131,7 +241,8 @@ def clean_block(data, threshold=2.5, max_iter=2, return_mask=False):
 
 def main(file_name, data, offset_base, file_info, model_session, prob,
                        ds_dds, ds_chunk, tdownsamp, plot_executor, save_path,
-                       time_reso, mask_block_idc=None, enable_dynamic_mask=False):
+                       time_reso, mask_block_idc=None, enable_dynamic_mask=False, 
+                       fc_weights=None, feature_output_name=None):
     """通用数据处理、预测和绘图提交例程。
 
     输入 Inputs:
@@ -196,7 +307,7 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     
     # 应用掩膜（若存在）
     if mask_block_idc is not None and len(mask_block_idc) > 0:
-        data_blocks[:, :, mask_block_idc] = np.mean(data_blocks)
+        data_blocks[:, :, mask_block_idc] = np.median(data_blocks)
 
     # 抽样检查 Mask 效果的标志
     check_plotted = False
@@ -243,9 +354,13 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
         true_start_index = offsets_list[block_idx]
         offset_block = (true_start_index) * time_reso * tdownsamp + offset_base
         
+        bbox = None
+        if feature_output_name is not None and fc_weights is not None:
+             bbox = get_cam_bbox(model_session, data_blocks[block_idx], fc_weights, feature_output_name)
+
         # submit plotting job
         plot_executor.submit(plot_burst, (data_blocks[block_idx], file_tstart), file_name,
-                                offset_block, file_info, tdownsamp, save_path)
+                                offset_block, file_info, tdownsamp, save_path, bbox)
         n_detect += 1
         
     return n_detect
@@ -328,7 +443,16 @@ if __name__ == "__main__":
     ds_dds = (dds // tdownsamp).astype(np.int64)
     ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
     base_model = './class_resnet18.onnx'
-    model = model_load(base_model, device)
+    # Use advanced model loading to enable CAM
+    try:
+        model, fc_weights, feature_layer_name = model_load_advanced(base_model)
+        print(f"Model loaded with CAM support. Feature layer: {feature_layer_name}")
+    except Exception as e:
+        print(f"Failed to load model with CAM support: {e}. Falling back to standard load.")
+        model = model_load(base_model, device)
+        fc_weights = None
+        feature_layer_name = None
+    
     chunk_idx = 0
     current_file_idx = -1
     current_mask_idc = None
@@ -385,7 +509,8 @@ if __name__ == "__main__":
         n_found = main(file_name, data, offset, file_info, model,
                                     prob, ds_dds, ds_chunk, tdownsamp,
                                     plot_executor, save_path, time_reso, 
-                                    mask_block_idc, enable_dynamic_mask=use_dynamic_mask)
+                                    mask_block_idc, enable_dynamic_mask=use_dynamic_mask,
+                                    fc_weights=fc_weights, feature_output_name=feature_layer_name)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
     plot_executor.shutdown(wait=True)
