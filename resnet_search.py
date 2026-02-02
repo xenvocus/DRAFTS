@@ -265,6 +265,12 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     # 动态 1:1 切片
     # 我们希望块的持续时间 (以时间 bin 为单位) 等于 n_freq 以保持 1:1 的纵横比
     block_len = n_freq
+
+    # 限制 block 的时间跨度不超过 300ms
+    max_len = int(0.3 / (time_reso * tdownsamp))
+    if max_len < 1: max_len = 1
+    if block_len > max_len:
+        block_len = max_len
     
     blocks_list = []
     offsets_list = []
