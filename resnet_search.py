@@ -193,46 +193,44 @@ def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio
         return None
 
 
-def clean_block(data, threshold=2.5, max_iter=2, return_mask=False):
+def clean_block(data, threshold=0.05, max_iter=None, return_mask=False):
     """
-    Apply combined robust Z-score masking (Mean + Std) to frequency channels.
-    data: (time, freq)
+    Apply FFT-based RFI masking to frequency channels.
+    Identify channels with high modulation in FFT domain and mask them.
+    
+    threshold: Percentage (0-1) of channels to cut. Default 0.05 (5%).
+               The algorithm masks channels whose max FFT magnitude is in the top `threshold` %.
     """
     data = data.copy()
-    total_mask = np.zeros(data.shape[1], dtype=bool)
+    n_time, n_freq = data.shape
     
-    for i in range(max_iter):
-        # 1. Calculate Statistics
-        mean_prof = np.mean(data, axis=0)
-        std_prof = np.std(data, axis=0)
-        
-        # 2. Helper for Robust Z-score
-        def get_outliers(arr, thresh):
-            med = np.median(arr)
-            diff = np.abs(arr - med)
-            mad = np.median(diff)
-            sigma = 1.4826 * mad
-            if sigma < 1e-9: return np.zeros_like(arr, dtype=bool)
-            return diff > thresh * sigma
-
-        # 3. Identify outliers in both Mean and Std
-        mask_mean = get_outliers(mean_prof, threshold)
-        mask_std = get_outliers(std_prof, threshold)
-        
-        new_mask = mask_mean | mask_std
-        
-        # If no new mask found, stop
-        if not np.any(new_mask):
-            break
-            
-        # 4. Apply Mask
-        # Replace with global median (effectively neutralizing the channel)
+    # 1. Compute FFT along time axis (axis 0)
+    # Skip DC component (index 0)
+    fft_data = np.fft.fft(data, axis=0)[1:] 
+    
+    # 2. Get Magnitude
+    mag = np.abs(fft_data)
+    
+    # 3. Find max magnitude for each channel across frequencies (time-freqs)
+    # axis=0 here reduces the time dim (which is now freq domain of time series)
+    max_freq_mag = np.max(mag, axis=0) # shape (n_freq,)
+    
+    # 4. Determine Threshold
+    # We zap the top `threshold` percent of channels
+    fft_thres_val = (1 - threshold) * 100
+    cutoff = np.nanpercentile(max_freq_mag, fft_thres_val)
+    
+    # 5. Create Mask
+    # Mask channels with magnitude > cutoff
+    new_mask = max_freq_mag > cutoff
+    
+    # 6. Apply Mask
+    # Replace masked channels with global median
+    if np.any(new_mask):
         global_med = np.median(data)
         data[:, new_mask] = global_med
         
-        total_mask = total_mask | new_mask
-    
-    mask_indices = np.where(total_mask)[0]
+    mask_indices = np.where(new_mask)[0]
     
     if return_mask:
         return data, mask_indices
@@ -262,15 +260,9 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     new_data = dedisperse(data, ds_dds, ds_chunk, use_numba=True)
     n_time, n_freq = new_data.shape
     
-    # 动态 1:1 切片
-    # 我们希望块的持续时间 (以时间 bin 为单位) 等于 n_freq 以保持 1:1 的纵横比
-    block_len = n_freq
-
-    # 限制 block 的时间跨度不超过 300ms
-    max_len = int(0.3 / (time_reso * tdownsamp))
-    if max_len < 1: max_len = 1
-    if block_len > max_len:
-        block_len = max_len
+    # 动态 1:1 切片 -> 修改：固定时间窗口 512
+    # 我们希望块的持续时间 (以时间 bin 为单位) 等于 512
+    block_len = 512
     
     blocks_list = []
     offsets_list = []
@@ -302,7 +294,9 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
             # 输入: (block_len, n_freq) -> (1, 1, block_len, n_freq)
             # 输出: (512, 512)
             t_data = torch.tensor(chunk_cut, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-            # adaptive_avg_pool2d 等效于降采样时的均值分箱 (binning)
+            
+            # 始终使用自适应平均池化进行降采样 (Binning)
+            # 即使频率通道不是 512 的整数倍，也能通过平均保持通量守恒
             resized = F.adaptive_avg_pool2d(t_data, (512, 512))
             blocks_list.append(resized.squeeze().numpy())
 
@@ -365,8 +359,13 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
              bbox = get_cam_bbox(model_session, data_blocks[block_idx], fc_weights, feature_output_name)
 
         # submit plotting job
+        # 修正：为了画图时正确计算时间持续，传入的 "freq_reso" (这里被解释为 block_len) 必须是 512
+        plot_file_info = list(file_info)
+        plot_file_info[1] = 512
+        plot_file_info = tuple(plot_file_info)
+        
         plot_executor.submit(plot_burst, (data_blocks[block_idx], file_tstart), file_name,
-                                offset_block, file_info, tdownsamp, save_path, bbox)
+                                offset_block, plot_file_info, tdownsamp, save_path, bbox)
         n_detect += 1
         
     return n_detect
@@ -403,21 +402,21 @@ if __name__ == "__main__":
     # 降采样前每次读取的原始样本数
     # 由时间采样点数决定
     nominal_chunk = 1536 * 512
-    # 调整 chunk_size 为 (freq_reso * tdownsamp) 的倍数以确保整除
-    unit = freq_reso * tdownsamp
+    # 调整 chunk_size 为 (512 * tdownsamp) 的倍数以确保整除
+    unit = 512 * tdownsamp
     chunk_size = max(unit, int(round(nominal_chunk / unit) * unit))
 
     if file_len <= chunk_size:
         chunk_size = -1
         total_chunk = len(file_list) 
-        # File-mode: ensure dedisperse output length is divisible by freq_reso (1:1 block_len).
+        # File-mode: ensure dedisperse output length is divisible by 512 (fixed block_len).
         ds_chunk_raw = int(file_len // tdownsamp)
-        ds_chunk = int((ds_chunk_raw // freq_reso) * freq_reso)
+        ds_chunk = int((ds_chunk_raw // 512) * 512)
         if ds_chunk <= 0:
             # Extremely short files: fall back to one block.
-            ds_chunk = int(freq_reso)
+            ds_chunk = 512
     else:
-        print(f'Processing data by chunk size:{chunk_size//512}x512 (adjusted for freq={freq_reso}).')
+        print(f'Processing data by chunk size:{chunk_size//512}x512 (adjusted for fixed block size).')
         total_chunk = np.ceil((len(file_list) * file_len) / chunk_size).astype(int)
         ds_chunk = chunk_size // tdownsamp
     # 创建预加载数据队列
@@ -450,14 +449,8 @@ if __name__ == "__main__":
     ds_dds = np.ascontiguousarray(ds_dds, dtype=np.int64)
     base_model = './class_resnet18.onnx'
     # Use advanced model loading to enable CAM
-    try:
-        model, fc_weights, feature_layer_name = model_load_advanced(base_model)
-        print(f"Model loaded with CAM support. Feature layer: {feature_layer_name}")
-    except Exception as e:
-        print(f"Failed to load model with CAM support: {e}. Falling back to standard load.")
-        model = model_load(base_model, device)
-        fc_weights = None
-        feature_layer_name = None
+    model, fc_weights, feature_layer_name = model_load_advanced(base_model)
+    print(f"Model loaded with CAM support. Feature layer: {feature_layer_name}")
     
     chunk_idx = 0
     current_file_idx = -1
