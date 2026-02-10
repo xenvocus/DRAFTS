@@ -12,12 +12,33 @@ def load_mask(mask_file):
             with open(mask_file, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    if not line or line.startswith('#'): continue
+                    if not line or line.startswith('#'):
+                        continue
+                    if 'frequency range' in line.lower() and 'channel range' in line.lower():
+                        continue
+
+                    if '|' in line:
+                        right = line.split('|', 1)[1]
+                        nums = re.findall(r'\d+', right)
+                        if len(nums) >= 2:
+                            start, end = int(nums[0]), int(nums[1])
+                            if start <= end:
+                                indices.extend(range(start, end + 1))
+                            else:
+                                indices.extend(range(end, start + 1))
+                            continue
+                        if len(nums) == 1:
+                            indices.append(int(nums[0]))
+                            continue
+
                     parts = line.replace(',', ' ').split()
                     for p in parts:
                         if '-' in p:
                             start, end = map(int, p.split('-'))
-                            indices.extend(range(start, end + 1))
+                            if start <= end:
+                                indices.extend(range(start, end + 1))
+                            else:
+                                indices.extend(range(end, start + 1))
                         else:
                             indices.append(int(p))
             return np.unique(np.array(indices, dtype=int))
