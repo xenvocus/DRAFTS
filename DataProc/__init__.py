@@ -169,10 +169,10 @@ class DataLoader:
 
     def get_params(self):
         if hasattr(self, 'header'):
-            return (self.time_reso, self.freq_reso, self.tstart, self.file_len, self.freq)
+            return (self.time_reso, self.freq_reso, self.tstart, self.file_len, self.freq, self.foff)
         else:
             self.load_header()
-            return (self.time_reso, self.freq_reso, self.tstart, self.file_len, self.freq)
+            return (self.time_reso, self.freq_reso, self.tstart, self.file_len, self.freq, self.foff)
 
 
 def data_generator(file_list, chunk_size, dds_size, tdownsamp, freq_reso, start_file_idx=0):
