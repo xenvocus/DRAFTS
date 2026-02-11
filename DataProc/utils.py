@@ -105,7 +105,7 @@ def _dedisperse_numpy(data, shifts, ds_chunk):
     return out
 
 
-def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, bbox=None):
+def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, bbox=None, mask_idc=None):
     data, file_tstart = plot_datas
     base_name = os.path.basename(os.path.splitext(filename)[0])
     fig          = plt.figure(figsize=(5, 5))
@@ -140,6 +140,12 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, b
     
     plt.subplot(gs[1:, 0])
     plt.imshow(data.T, origin='lower', cmap='mako', aspect='auto')
+    
+    # 增加：标注被掩膜的通道 (红色短横线)
+    if mask_idc is not None and len(mask_idc) > 0:
+        dash_len = w * 0.03
+        plt.hlines(mask_idc, 0, dash_len, colors='red', linewidths=0.6, alpha=0.8)
+
     plt.scatter(np.argmax(profile), 0, color='red', s=100, marker='x')
     
     # Y轴: 根据图像高度(h)设置刻度位置，标签显示频率(MHz)

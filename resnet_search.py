@@ -313,9 +313,11 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
     check_plotted = False
 
     # 对每个块进行预处理
+    block_masks = []
     for j in range(data_blocks.shape[0]):
+        current_mask = None
         if enable_dynamic_mask:
-            data_blocks[j, :, :], mask_idc = clean_block(data_blocks[j, :, :], return_mask=True)
+            data_blocks[j, :, :], current_mask = clean_block(data_blocks[j, :, :], return_mask=True)
             # 随机抽一张保存展示效果 (每个文件最多一张，概率 10% 以防错过短文件)
             if not check_plotted and np.random.rand() < 0.1:
                 try:
@@ -326,8 +328,8 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
                     plt.colorbar()
                     
                     # 用红线明确标明 mask 掉的 channel (Y 轴)
-                    if mask_idc is not None:
-                        for midx in mask_idc:
+                    if current_mask is not None:
+                        for midx in current_mask:
                              plt.axhline(y=midx, color='red', linewidth=0.8, alpha=0.7)
 
                     raw_name = f"mask_check_{os.path.basename(file_name).replace('.fits', '')}_blk{j}"
@@ -340,7 +342,10 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
                     check_plotted = True
                 except Exception as e:
                     print(f"Failed to plot mask check: {e}")
+        elif mask_block_idc is not None:
+            current_mask = mask_block_idc
 
+        block_masks.append(current_mask)
         data_blocks[j, :, :] = preprocess_data(data_blocks[j, :, :])
 
     blocks = predict(model_session, data_blocks, prob)
@@ -365,7 +370,8 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
         plot_file_info = tuple(plot_file_info)
         
         plot_executor.submit(plot_burst, (data_blocks[block_idx], file_tstart), file_name,
-                                offset_block, plot_file_info, tdownsamp, save_path, bbox)
+                                offset_block, plot_file_info, tdownsamp, save_path, bbox, 
+                                mask_idc=block_masks[block_idx])
         n_detect += 1
         
     return n_detect
