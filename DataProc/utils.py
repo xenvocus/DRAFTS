@@ -105,7 +105,7 @@ def _dedisperse_numpy(data, shifts, ds_chunk):
     return out
 
 
-def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, bbox=None, mask_idc=None):
+def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, bbox=None, mask_idc=None, gradcam=None):
     data, file_tstart = plot_datas
     base_name = os.path.basename(os.path.splitext(filename)[0])
     fig          = plt.figure(figsize=(5, 5))
@@ -141,6 +141,12 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, b
     plt.subplot(gs[1:, 0])
     plt.imshow(data.T, origin='lower', cmap='mako', aspect='auto')
     
+    # Optional: Overlay Grad-CAM heatmap
+    if gradcam is not None:
+        # gradcam shape is expected to be same as data (Time, Freq) -> needs Transpose (Freq, Time)
+        # Use a transparent colormap (e.g., jet or inferno) and alpha blending
+        plt.imshow(gradcam.T, origin='lower', cmap='jet', alpha=0.4, aspect='auto')
+
     # 增加：标注被掩膜的通道 (红色短横线)
     if mask_idc is not None and len(mask_idc) > 0:
         dash_len = w * 0.03

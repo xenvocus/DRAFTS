@@ -45,6 +45,7 @@ def get_args():
     args.add_argument('-p', '--prob', type=float, default=0.5)
     args.add_argument('-ds', '--tdownsamp', type=int, default=-1)
     args.add_argument('--mask', type=str, default=None, help='通道掩膜文件的路径')
+    args.add_argument('--gradcam', action='store_true', help='Enable Grad-CAM heatmap overlay')
     args = args.parse_args()
     return args
 
@@ -120,6 +121,9 @@ def model_load_advanced(model_path):
     return session, fc_weights, feature_node_name
 
 def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio=0.5):
+    """
+    Returns: (bbox_tuple, cam_np_array) or (None, None)
+    """
     try:
         # Prepare input
         input_name = session.get_inputs()[0].name
@@ -134,7 +138,7 @@ def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio
         feature_map = outputs[0] # (1, 512, H, W) -> usually (1, 512, 16, 16) for ResNet18 input 512
         
         if fc_weights is None:
-            return None
+            return None, None
 
         # CAM calculation
         # feature_map: (1, 512, 16, 16)
@@ -157,7 +161,7 @@ def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio
         mask = cam_np > threshold_ratio
         
         if not np.any(mask):
-            return None
+            return None, cam_np
             
         t_indices = np.where(np.any(mask, axis=1))[0] # Time is dim 0 (height in array)
         f_indices = np.where(np.any(mask, axis=0))[0] # Freq is dim 1 (width in array)
@@ -181,16 +185,16 @@ def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio
         # f_indices are indices in dimension 1 of data (Freq).
         
         if len(t_indices) == 0 or len(f_indices) == 0:
-            return None
+            return None, cam_np
             
         x_min, x_max = int(t_indices[0]), int(t_indices[-1])
         y_min, y_max = int(f_indices[0]), int(f_indices[-1])
         
-        return (x_min, x_max, y_min, y_max)
+        return (x_min, x_max, y_min, y_max), cam_np
         
     except Exception as e:
         print(f"Error computing CAM: {e}")
-        return None
+        return None, None
 
 
 def clean_block(data, threshold=0.05, max_iter=None, return_mask=False):
@@ -240,7 +244,7 @@ def clean_block(data, threshold=0.05, max_iter=None, return_mask=False):
 def main(file_name, data, offset_base, file_info, model_session, prob,
                        ds_dds, ds_chunk, tdownsamp, plot_executor, save_path,
                        time_reso, mask_block_idc=None, enable_dynamic_mask=False, 
-                       fc_weights=None, feature_output_name=None):
+                       fc_weights=None, feature_output_name=None, enable_gradcam=False):
     """通用数据处理、预测和绘图提交例程。
 
     输入 Inputs:
@@ -360,8 +364,11 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
         offset_block = (true_start_index) * time_reso * tdownsamp + offset_base
         
         bbox = None
+        gradcam_map = None
         if feature_output_name is not None and fc_weights is not None:
-             bbox = get_cam_bbox(model_session, data_blocks[block_idx], fc_weights, feature_output_name)
+             bbox, cam_np = get_cam_bbox(model_session, data_blocks[block_idx], fc_weights, feature_output_name)
+             if enable_gradcam:
+                 gradcam_map = cam_np
 
         # submit plotting job
         # 修正：为了画图时正确计算时间持续，传入的 "freq_reso" (这里被解释为 block_len) 必须是 512
@@ -371,7 +378,7 @@ def main(file_name, data, offset_base, file_info, model_session, prob,
         
         plot_executor.submit(plot_burst, (data_blocks[block_idx], file_tstart), file_name,
                                 offset_block, plot_file_info, tdownsamp, save_path, bbox, 
-                                mask_idc=block_masks[block_idx])
+                                mask_idc=block_masks[block_idx], gradcam=gradcam_map)
         n_detect += 1
         
     return n_detect
@@ -530,7 +537,8 @@ if __name__ == "__main__":
                                     prob, ds_dds, ds_chunk, tdownsamp,
                                     plot_executor, save_path, time_reso, 
                                     mask_block_idc, enable_dynamic_mask=use_dynamic_mask,
-                                    fc_weights=fc_weights, feature_output_name=feature_layer_name)
+                                    fc_weights=fc_weights, feature_output_name=feature_layer_name, 
+                                    enable_gradcam=args.gradcam)
         print(f"Find {n_found} candidates in file {basename}{chunk_str}")
     preload_process.join()  # Wait for the preload process to finish
     plot_executor.shutdown(wait=True)
