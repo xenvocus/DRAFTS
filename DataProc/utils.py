@@ -108,18 +108,22 @@ def _dedisperse_numpy(data, shifts, ds_chunk):
 def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, bbox=None, mask_idc=None, gradcam=None):
     data, file_tstart = plot_datas
     base_name = os.path.basename(os.path.splitext(filename)[0])
-    fig          = plt.figure(figsize=(5, 5))
-    gs           = gridspec.GridSpec(4, 1)
-    time_reso, freq_reso, tstart, _, freq = file_info
-    w, h         = data.shape
-    profile      = np.mean(data, axis=1)
     
+    time_reso, freq_reso, tstart, _, freq = file_info
+    w, h = data.shape
+    profile = np.mean(data, axis=1)
+
+    # 布局调整：如果有 gradcam，则宽度加倍，显示左右两个图
+    if gradcam is not None:
+        fig = plt.figure(figsize=(10, 5))
+        gs = gridspec.GridSpec(4, 2) # 4行2列
+    else:
+        fig = plt.figure(figsize=(5, 5))
+        gs = gridspec.GridSpec(4, 1)
+
     # 校正 peak_time 计算：
     # np.argmax(profile) 返回的是缩放后图片的时间索引 (范围 0-511)
-    # 我们需要将其映射回真实的物理时长
-    # 真实物理时长 = freq_reso * time_reso * tdownsamp (即 1:1 切片逻辑)
-    # 图片时间轴长度 = w (通常为 512)
-    # 所以：每个像素代表的时间 = (freq_reso * time_reso * tdownsamp) / w
+    # ... (省略中间注释)
     pixel_dt = (freq_reso * time_reso * tdownsamp) / w
     dpeak_time = np.argmax(profile) * pixel_dt
     
@@ -130,50 +134,75 @@ def plot_burst(plot_datas, filename, offset, file_info, tdownsamp, output_dir, b
     start_mjd = tstart + offset / 86400.0
     burst_mjd = start_mjd + dpeak_time / 86400.0
     
-    plt.subplots_adjust(wspace=0, hspace=0)
-    plt.subplot(gs[0, 0])
-    plt.plot(profile, color='royalblue', alpha=0.8, lw=1)
-    plt.scatter(np.argmax(profile), np.max(profile), color='red', s=100, marker='x')
-    plt.xlim(0, w)
-    plt.xticks([])
-    plt.yticks([])
-    
-    plt.subplot(gs[1:, 0])
-    plt.imshow(data.T, origin='lower', cmap='mako', aspect='auto')
-    
-    # Optional: Overlay Grad-CAM heatmap
-    if gradcam is not None:
-        # gradcam shape is expected to be same as data (Time, Freq) -> needs Transpose (Freq, Time)
-        # Use a transparent colormap (e.g., jet or inferno) and alpha blending
-        plt.imshow(gradcam.T, origin='lower', cmap='jet', alpha=0.4, aspect='auto')
+    plt.subplots_adjust(wspace=0.1, hspace=0)
 
+    # --- 左侧（或唯一）: 原始数据 ---
+    # Profile
+    ax_prof = plt.subplot(gs[0, 0])
+    ax_prof.plot(profile, color='royalblue', alpha=0.8, lw=1)
+    ax_prof.scatter(np.argmax(profile), np.max(profile), color='red', s=100, marker='x')
+    ax_prof.set_xlim(0, w)
+    ax_prof.set_xticks([])
+    ax_prof.set_yticks([])
+    
+    # Dynamic Spectrum
+    ax_ds = plt.subplot(gs[1:, 0])
+    ax_ds.imshow(data.T, origin='lower', cmap='mako', aspect='auto')
+    
     # 增加：标注被掩膜的通道 (红色短横线)
     if mask_idc is not None and len(mask_idc) > 0:
         dash_len = w * 0.03
-        plt.hlines(mask_idc, 0, dash_len, colors='red', linewidths=0.6, alpha=0.8)
+        ax_ds.hlines(mask_idc, 0, dash_len, colors='red', linewidths=0.6, alpha=0.8)
 
-    plt.scatter(np.argmax(profile), 0, color='red', s=100, marker='x')
+    ax_ds.scatter(np.argmax(profile), 0, color='red', s=100, marker='x')
     
-    # Y轴: 根据图像高度(h)设置刻度位置，标签显示频率(MHz)
-    # 之前代码中 f 计算逻辑有误，导致在非整倍数降采样时刻度位置错乱或未铺满
-    plt.yticks(np.linspace(0, h, 6), np.linspace(freq.min(), freq.max(), 6).astype(int))
+    # Y轴刻度
+    ax_ds.set_yticks(np.linspace(0, h, 6))
+    ax_ds.set_yticklabels(np.linspace(freq.min(), freq.max(), 6).astype(int))
+    ax_ds.set_ylabel('Frequency (MHz)')
     
-    # X轴: 根据图像宽度(w)设置刻度位置，标签显示时间(s)
-    # 修正逻辑：由于我们在 main 中强制 1:1 切分 (block_len = freq_reso)，
-    # 图片代表的总物理时间为 freq_reso * time_reso * tdownsamp，与最终 resize 后的宽度 w 无关。
+    # X轴刻度
     duration = freq_reso * time_reso * tdownsamp
-    plt.xticks(np.linspace(0, w, 6), np.round(offset + np.linspace(0, duration, 6), 2))
-    
+    ax_ds.set_xticks(np.linspace(0, w, 6))
+    ax_ds.set_xticklabels(np.round(offset + np.linspace(0, duration, 6), 2))
+    ax_ds.set_xlabel('Time (s)')
+
     if bbox is not None:
-        # bbox format: (x_min, x_max, y_min, y_max)
-        # x corresponds to Time (0-511), y corresponds to Freq (0-511)
         x_min, x_max, y_min, y_max = bbox
         rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
                          linewidth=0.8, edgecolor='red', facecolor='none')
-        plt.gca().add_patch(rect)
+        ax_ds.add_patch(rect)
 
-    plt.xlabel('Time (s)')
-    plt.ylabel('Frequency (MHz)')
+    # --- 右侧: Grad-CAM ---
+    if gradcam is not None:
+        # Profile (复制一份在右边，方便对比)
+        ax_prof_cam = plt.subplot(gs[0, 1])
+        ax_prof_cam.plot(profile, color='royalblue', alpha=0.8, lw=1)
+        ax_prof_cam.set_xlim(0, w)
+        ax_prof_cam.set_xticks([])
+        ax_prof_cam.set_yticks([]) # 右侧不显示Y轴刻度
+        ax_prof_cam.set_title("Grad-CAM Activation", fontsize=10)
+
+        # Heatmap
+        ax_cam = plt.subplot(gs[1:, 1])
+        # 显示原始数据作为背景（灰度），叠加显眼的热力图
+        ax_cam.imshow(data.T, origin='lower', cmap='gray', alpha=0.5, aspect='auto')
+        im_cam = ax_cam.imshow(gradcam.T, origin='lower', cmap='jet', alpha=0.6, aspect='auto')
+        
+        # 同样的 bbox
+        if bbox is not None:
+            rect2 = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
+                             linewidth=0.8, edgecolor='white', linestyle='--', facecolor='none')
+            ax_cam.add_patch(rect2)
+            
+        # 设置刻度 (与左图对齐但不显示Y轴标签)
+        ax_cam.set_yticks(np.linspace(0, h, 6))
+        ax_cam.set_yticklabels([]) # 隐藏Y轴标签
+        ax_cam.set_xticks(np.linspace(0, w, 6))
+        ax_cam.set_xticklabels(np.round(offset + np.linspace(0, duration, 6), 2))
+        ax_cam.set_xlabel('Time (s)')
+
+
     # 更新文件名格式，包含 MJD
     # 增加跨平台文件命名安全性处理：替换 Windows/Linux 非法字符为连字符
     raw_name = f'{base_name}_S{start_mjd:.9f}_MJD{burst_mjd:.9f}_{peak_time:.4f}s'

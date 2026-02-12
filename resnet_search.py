@@ -147,17 +147,24 @@ def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio
         
         # (1, 512, H, W) * (512,) -> (1, H, W)
         # np.einsum is convenient: 'bchw,c->bhw'
-        cam = np.einsum('bchw,c->bhw', feature_map, weight)
+        feature_map_t = torch.from_numpy(feature_map)
+        weight_t = torch.from_numpy(weight)
+
+        # PyTorch equivalent of einsum
+        cam_t = torch.einsum('bchw,c->bhw', feature_map_t, weight_t)
         
-        # Normalize and Resize
-        # Use torch for interpolation as it's already imported and easy
-        cam_tensor = torch.from_numpy(cam).unsqueeze(1) # (1, 1, H, W)
+        # Resize using PyTorch
+        cam_tensor = cam_t.unsqueeze(1) # (1, 1, H, W)
         cam_resized = F.interpolate(cam_tensor, size=(512, 512), mode='bilinear', align_corners=False)
         cam_np = cam_resized.squeeze().numpy() # (512, 512)
         
-        cam_np = cam_np - cam_np.min()
-        cam_np = cam_np / (cam_np.max() + 1e-8)
-        
+        # Normalize strictly to 0-1 range for correct heatmap visualization
+        cam_min, cam_max = cam_np.min(), cam_np.max()
+        if cam_max > cam_min:
+            cam_np = (cam_np - cam_min) / (cam_max - cam_min)
+        else:
+            cam_np = np.zeros_like(cam_np)
+            
         mask = cam_np > threshold_ratio
         
         if not np.any(mask):
@@ -165,24 +172,6 @@ def get_cam_bbox(session, data, fc_weights, feature_output_name, threshold_ratio
             
         t_indices = np.where(np.any(mask, axis=1))[0] # Time is dim 0 (height in array)
         f_indices = np.where(np.any(mask, axis=0))[0] # Freq is dim 1 (width in array)
-        
-        # In plot_burst: imshow(data.T)
-        # data is (Time, Freq) -> (512, 512)
-        # imshow(data.T) means X-axis is Time (dim 0 of original), Y-axis is Freq (dim 1 of original)
-        # But wait, imshow(data.T) puts dim 1 (Freq) on Y, dim 0 (Time) on X.
-        
-        # bbox format expected by plot_burst in utils.py:
-        # x_min, x_max, y_min, y_max
-        # In plot_burst:
-        # rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min)
-        # plt.imshow(data.T, ...) 
-        # data.T shape is (Freq, Time). 
-        # imshow uses (row, col) as (y, x).
-        # data.T[y, x] corresponds to data[x, y].
-        # So X-coord in plot is Time index (0..511). Y-coord in plot is Freq index (0..511).
-        
-        # t_indices are indices in dimension 0 of data (Time).
-        # f_indices are indices in dimension 1 of data (Freq).
         
         if len(t_indices) == 0 or len(f_indices) == 0:
             return None, cam_np
