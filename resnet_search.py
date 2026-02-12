@@ -389,8 +389,14 @@ if __name__ == "__main__":
     print(f"{len(file_list)} file(s) in list.")
     loader = DataLoader(file_list[0])
     file_info = loader.get_params()
-    # file_info signature updated: (time_reso, freq_reso, tstart, file_len, freq, foff)
-    time_reso, freq_reso, _, file_len, freq, foff_val = file_info
+    time_reso, freq_reso, _, file_len, freq = file_info
+    
+    # Check if data is reversed (foff < 0)
+    is_freq_reversed = False
+    if hasattr(loader, 'foff') and loader.foff < 0:
+        is_freq_reversed = True
+        print("Dataset has negative frequency step. Data will be reversed internally.")
+
     if args.tdownsamp > 0:
         tdownsamp = args.tdownsamp
     else:
@@ -439,11 +445,10 @@ if __name__ == "__main__":
         else:
             mask_chans = load_mask(args.mask)
             if mask_chans is not None:
-                # IMPORTANT: If original data was descending (foff < 0), DataLoader flipped it.
-                # Mask channels (relative to raw file) must be flipped to match.
-                if foff_val < 0:
-                    mask_chans = (freq_reso - 1) - mask_chans
-                    print(f"Detected negative foff ({foff_val}); flipping mask channel indices.")
+                # If data frequency order is reversed, we must reverse the mask indices to match
+                if is_freq_reversed:
+                    print("Reversing global mask indices to match data frequency order.")
+                    mask_chans = freq_reso - 1 - mask_chans
 
                 # Map raw channel idc to block column idc (512 columns)
                 # Block column j corresponds to raw channels [j*factor, (j+1)*factor)
@@ -494,12 +499,9 @@ if __name__ == "__main__":
                     if os.path.exists(mask_path):
                         m_chans = load_mask(mask_path)
                         if m_chans is not None:
-                            # IMPORTANT: Map raw mask indices to flipped indices if needed
-                            dl_temp = DataLoader(file_name)
-                            _, _, _, _, _, foff_temp = dl_temp.get_params()
-                            if foff_temp < 0:
-                                m_chans = (freq_reso - 1) - m_chans
-                            
+                            if is_freq_reversed:
+                                m_chans = freq_reso - 1 - m_chans
+
                             factor = freq_reso / 512.0
                             m_blks = np.unique((m_chans / factor).astype(int))
                             current_mask_idc = m_blks[(m_blks >= 0) & (m_blks < 512)]
@@ -518,7 +520,7 @@ if __name__ == "__main__":
         else:
             # Use global-time offset (seconds since first file start) for consistent timing across files.
             dl = DataLoader(file_name)
-            _dt_i, _nchan_i, tstart_i, _file_len_i, _freq_i, _foff_i = dl.get_params()
+            _dt_i, _nchan_i, tstart_i, _file_len_i, _freq_i = dl.get_params()
             offset = (tstart_i - file_info[2]) * 86400.0
             progress_str = f"{file_idx+1}/{total_chunk}"
             chunk_str = ""
