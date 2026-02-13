@@ -292,7 +292,8 @@ def get_args():
             "定向提取给定中心 MJD 的模型输入切片：dedisperse + 1:1 window + mean-resample -> (512,512)."
         )
     )
-    p.add_argument("--mjd", type=float, required=True, help="中心 MJD")
+    p.add_argument("--mjd", type=float, default=None, help="中心 MJD")
+    p.add_argument("--toa", type=float, default=None, help="中心 TOA (秒)")
     p.add_argument("-dm", "--dm", type=float, required=True, help="DM")
     p.add_argument(
         "file",
@@ -321,6 +322,16 @@ def main():
     loader0 = DataLoader(file_list[0])
     file_info = loader0.get_params()
     time_reso, freq_reso, tstart, _file_len, _freq = file_info
+
+    if args.mjd is not None:
+        center_mjd = args.mjd
+        toa_seconds = (center_mjd - tstart) * 86400.0
+    elif args.toa is not None:
+        toa_seconds = args.toa
+        center_mjd = tstart + toa_seconds / 86400.0
+    else:
+        raise ValueError("Must provide either --mjd or --toa")
+
     if args.tdownsamp > 0:
         tdownsamp_eff = int(args.tdownsamp)
     else:
@@ -328,18 +339,19 @@ def main():
 
     # For plotting (resnet_search.py uses block duration = freq_reso * time_reso * tdownsamp)
     duration_sec = freq_reso * time_reso * tdownsamp_eff
-    start_mjd = args.mjd - (duration_sec / 2.0) / 86400.0
+    start_mjd = center_mjd - (duration_sec / 2.0) / 86400.0
 
     img = extract_slice_512(
         file_list=file_list,
-        center_mjd=args.mjd,
+        center_mjd=center_mjd,
         dm=args.dm,
         tdownsamp=tdownsamp_eff,
         mask_file=args.mask,
         exp_cut=args.exp_cut,
     )
 
-    base = f"slice_MJD{args.mjd:.9f}_DM{args.dm:g}"
+    fits_name = os.path.basename(file_list[0])
+    base = f"{fits_name}_S{start_mjd:.9f}_MJD{center_mjd:.9f}_toa{toa_seconds:.4f}"
     out_npy = os.path.join(args.output, base + ".npy")
     out_jpg = os.path.join(args.output, base + ".jpg")
     np.save(out_npy, img)
