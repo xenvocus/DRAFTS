@@ -138,6 +138,7 @@ def extract_slice_512(
     tdownsamp,
     mask_file=None,
     exp_cut=5,
+    twindow=512,
 ):
     """Extract one preprocessed (512,512) slice centered at center_mjd.
 
@@ -145,10 +146,13 @@ def extract_slice_512(
     - read raw data
     - time downsample by mean (and average pols)
     - dedisperse using ds_dds
-    - take a 1:1 window (time_len = n_freq)
+    - take a window (time_len = twindow)
     - adaptive_avg_pool2d to (512,512)
     - apply mask (mapped to 512 columns)
     - preprocess_data
+
+    Args:
+        twindow: number of downsampled time samples to extract (default: 512)
 
     Returns:
         img_512: np.ndarray[512,512] float32 in [0,1]
@@ -169,8 +173,8 @@ def extract_slice_512(
     ds_dds = (dds // tdownsamp).astype(np.int64)
     ds_max = int(ds_dds.max())
 
-    # In model slicing, block_len equals n_freq (to keep 1:1 aspect)
-    block_len_ds = int(freq_reso)
+    # In model slicing, block_len is controlled by twindow parameter
+    block_len_ds = int(twindow)
 
     # Physical duration covered by one block (seconds)
     dt_ds = time_reso * tdownsamp
@@ -289,7 +293,7 @@ def _save_resnet_search_style_jpg(data_512, file_name, start_mjd, file_info, tdo
 def get_args():
     p = argparse.ArgumentParser(
         description=(
-            "定向提取给定中心 MJD 的模型输入切片：dedisperse + 1:1 window + mean-resample -> (512,512)."
+            "定向提取给定中心 MJD 的模型输入切片：dedisperse + time_window + mean-resample -> (512,512)."
         )
     )
     p.add_argument("--mjd", type=float, default=None, help="中心 MJD")
@@ -301,6 +305,7 @@ def get_args():
     )
     p.add_argument("-o", "--output", type=str, default="./", help="输出目录")
     p.add_argument("-ds", "--tdownsamp", type=int, default=4, help="时间降采样因子；<=0 则自动")
+    p.add_argument("-tw", "--time-window", type=int, default=512, help="时间窗口大小（降采样样本数）；默认=512")
     p.add_argument("--mask", type=str, default=None, help="通道掩膜文件 (raw chan indices)，会映射到 512 列")
     p.add_argument("--exp-cut", type=float, default=5, help="preprocess_data 的 percentile clip 参数")
     return p.parse_args()
@@ -337,8 +342,8 @@ def main():
     else:
         tdownsamp_eff = int(_auto_tdownsamp(time_reso))
 
-    # For plotting (resnet_search.py uses block duration = freq_reso * time_reso * tdownsamp)
-    duration_sec = freq_reso * time_reso * tdownsamp_eff
+    # For plotting (block duration = time_window * time_reso * tdownsamp)
+    duration_sec = args.time_window * time_reso * tdownsamp_eff
     start_mjd = center_mjd - (duration_sec / 2.0) / 86400.0
 
     img = extract_slice_512(
@@ -348,6 +353,7 @@ def main():
         tdownsamp=tdownsamp_eff,
         mask_file=args.mask,
         exp_cut=args.exp_cut,
+        twindow=args.time_window,
     )
 
     fits_name = os.path.basename(file_list[0])
